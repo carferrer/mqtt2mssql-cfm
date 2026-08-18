@@ -10,13 +10,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unixodbc-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. Descargar e instalar el configurador automático de repositorios oficiales de Microsoft
-# Este paquete .deb configura las llaves y el catálogo APT de forma nativa sin usar comandos gpg manuales
-RUN curl -sSLO https://microsoft.com \
+# Truco de ensamblado: dividimos la dirección exacta para que no sufra ningún recorte de texto
+ENV ENLACE_BASE="https://packages.microsoft.com"
+ENV RUTA_PAQUETE="/config/debian/12/packages-microsoft-prod.deb"
+
+# 2. Descargar e instalar el configurador automático uniendo las dos partes de forma exacta
+RUN curl -A "Mozilla/5.0" -fsSLO "${ENLACE_BASE}${RUTA_PAQUETE}" \
     && dpkg -i packages-microsoft-prod.deb \
     && rm packages-microsoft-prod.deb
 
-# 3. Actualizar la lista de APT (ahora con el repositorio oficial) e instalar MS ODBC 18
+# 3. Actualizar la lista de APT e instalar MS ODBC 18
 RUN apt-get update && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
     msodbcsql18 \
     && rm -rf /var/lib/apt/lists/*
@@ -24,7 +27,7 @@ RUN apt-get update && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
 # 4. Instalar las librerías de Python requeridas
 RUN pip3 install --no-cache-dir paho-mqtt pyodbc
 
-# 5. Copiar el archivo ejecutor de Python al contenedor
+# 5. Copiar tu script ejecutor de Python al contenedor
 COPY run.py /run.py
 RUN chmod a+x /run.py
 
