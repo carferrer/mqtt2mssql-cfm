@@ -14,18 +14,18 @@ except Exception as e:
     sys.exit(1)
 
 # Extraer las credenciales dinámicas de la configuración
-MSSQL_SERVER = config_data.get("mssql_server")
+MSSQL_SERVER = config_data.get("mssql_server","mssqlserver")
 MSSQL_PORT = config_data.get("mssql_port", 1433)
-MSSQL_DB = config_data.get("mssql_database")
-MSSQL_USER = config_data.get("mssql_user")
-MSSQL_PWD = config_data.get("mssql_password")
+MSSQL_DB = config_data.get("mssql_database","mssqlbbdd")
+MSSQL_USER = config_data.get("mssql_user","mssqluser")
+MSSQL_PWD = config_data.get("mssql_password","mssqlpwd")
 
 MQTT_HOST = config_data.get("mqtt_host", "core-mosquitto")
 MQTT_PORT = config_data.get("mqtt_port", 1883)
-MQTT_USER = config_data.get("mqtt_user", "mqtt2mssql")
-MQTT_PWD = config_data.get("mqtt_password", "mqtt2mssql")
-MQTT_ID = config_data.get("mqtt_id", "mqtt2mssql")
-MQTT_TOPIC = config_data.get("mqtt_topic", "topic-mqtt2mssql")
+MQTT_USER = config_data.get("mqtt_user", "mqttuser")
+MQTT_PWD = config_data.get("mqtt_password", "mqttpwd")
+MQTT_ID = config_data.get("mqtt_id", "mqttid")
+MQTT_TOPIC = config_data.get("mqtt_topic", "mqtt2mssqltopic")
 
 # Construcción de la cadena de conexión con las variables del Add-on
 CONNECTION_STRING = (
@@ -80,8 +80,25 @@ def on_message(client, userdata, msg):
 
 # Configuración del cliente MQTT con ID fijo y sesión persistente
 CLIENT_ID = MQTT_ID
-client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)
+
+# NOTA DE COMPATIBILIDAD: Las versiones modernas de paho-mqtt exigen definir la API v1 o v2.
+# Usamos CallbackAPIVersion.VERSION1 para asegurar compatibilidad total con scripts tradicionales.
+try:
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=CLIENT_ID, clean_session=False)
+except AttributeError:
+    # Si la imagen usa una versión antigua de paho-mqtt que no requiere la API version, hace fallback
+    client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)
+
 client.on_message = on_message
+
+# ==========================================
+# SOLUCIÓN: CONFIGURAR CREDENCIALES MQTT
+# ==========================================
+# Aplicamos el usuario y contraseña extraídos de la interfaz ANTES de conectar.
+# Si ambos campos existen, los inyectamos en el cliente.
+if MQTT_USER and MQTT_PWD:
+    client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
+    print(f"[INFO] Aplicando credenciales de autenticación para el usuario MQTT: {MQTT_USER}")
 
 print("[INFO] Iniciando el puente HA-MSSQL con credenciales dinámicas...")
 print(f"[INFO] Conectando al bróker MQTT ({MQTT_HOST}:{MQTT_PORT})...")
