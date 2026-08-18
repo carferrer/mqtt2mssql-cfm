@@ -1,6 +1,11 @@
 # Usamos la imagen oficial de Python en Alpine Linux (Universal para AMD64 y ARM)
 FROM python:3.11-alpine3.19
 
+ARG BUILD_VERSION=latest
+LABEL \
+    io.hass.version="$BUILD_VERSION" \
+    io.hass.type="addon"
+
 # 1. Instalar herramientas base del sistema, compiladores y certificados
 RUN apk add --no-cache \
     unixodbc \
