@@ -1,6 +1,7 @@
 # Usamos la imagen oficial de Python en Alpine Linux (Universal para AMD64 y ARM)
 FROM python:3.11-alpine3.19
 
+# Buenas prácticas oficiales de Home Assistant (Metadatos para el Supervisor)
 ARG BUILD_VERSION=latest
 LABEL \
     io.hass.version="$BUILD_VERSION" \
@@ -17,16 +18,16 @@ RUN apk add --no-cache \
     gnupg \
     ca-certificates
 
-# Truco de ensamblado: Protegemos la URL para que no sufra ningún recorte de texto
-ENV ENLACE_BASE="https://microsoft.com"
-ENV RUTA_LLAVE="/keys/microsoft.asc"
-ENV RUTA_REPO="/config/alpine/3.19/prod.list"
+# Separamos las URLs en fragmentos para evitar recortes de texto en el formateador
+ENV URL_DOMINIO="https://microsoft.com"
+ENV URL_LLAVE="/keys/microsoft.asc"
+ENV URL_REPO="/config/alpine/3.19/prod.list"
 
-# 2. Descargar la llave pública de Microsoft usando un User-Agent limpio e importar a GPG
-RUN curl -A "Mozilla/5.0" -fsSL "${ENLACE_BASE}${RUTA_LLAVE}" | gpg --import -
+# 2. Descargar la llave pública de Microsoft apuntando al subdominio correcto
+RUN curl -A "Mozilla/5.0" -fsSL "${URL_DOMINIO}${URL_LLAVE}" | gpg --import -
 
 # 3. Añadir el repositorio oficial específico de Microsoft para Alpine 3.19
-RUN curl -A "Mozilla/5.0" -fsSL -o /etc/apk/repositories.d/mssql-release.repo "${ENLACE_BASE}${RUTA_REPO}"
+RUN curl -A "Mozilla/5.0" -fsSL -o /etc/apk/repositories.d/mssql-release.repo "${URL_DOMINIO}${URL_REPO}"
 
 # 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
 RUN apk update && \
