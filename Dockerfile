@@ -1,36 +1,31 @@
-# Usamos la imagen oficial de Python en Alpine Linux (Independiente de HA)
-FROM python:3.11-alpine3.19
+# Usamos Debian Slim: Súper estable, compatible con ARM y AMD64, y sin fallos de red en HA
+FROM python:3.11-slim-bookworm
 
-ARG BUILD_VERSION=latest
-LABEL io.hass.version="$BUILD_VERSION" io.hass.type="addon" io.hass.arch="aarch64|amd64"
-
-# Instalar dependencias del sistema y herramientas de compilación
-RUN apk add --no-cache \
+# 1. Instalar herramientas del sistema indispensables
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg \
+    ca-certificates \
+    build-essential \
     unixodbc \
     unixodbc-dev \
-    gcc \
-    g++ \
-    make \
-    curl \
-    gnupg
+    && rm -rf /var/lib/apt/lists/*
 
-# 2. Descargar la llave pública de Microsoft e importar al llavero de GPG
-RUN curl -sSL https://microsoft.com | gpg --import -
+# 2. Añadir la llave y el repositorio oficial de Microsoft para Debian 12 (Bookworm)
+RUN curl -fsSL https://microsoft.com | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://microsoft.com bookworm main" > /etc/apt/sources.list.add.d/mssql-release.list
 
-# 3. Añadir el repositorio oficial específico de Microsoft para Alpine 3.19
-RUN curl -sSL -o /etc/apk/repositories.d/mssql-release.repo https://microsoft.com
+# 3. Actualizar e instalar el Driver ODBC 18 oficial de Microsoft de forma totalmente automática
+RUN apt-get update && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
+    msodbcsql18 \
+    && rm -rf /var/lib/apt/lists/*
 
-# 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft
-# ACCEPT_EULA=Y acepta la licencia obligatoria en modo silencioso
-RUN apk update && \
-    ACCEPT_EULA=Y apk add --no-cache msodbcsql18
-
-# 5. Instalar las librerías de Python requeridas
+# 4. Instalar las librerías de Python
 RUN pip3 install --no-cache-dir paho-mqtt pyodbc
 
-# 6. Copiar el script que lee la configuración de la interfaz e inicia el bucle MQTT
+# 5. Copiar el script ejecutor
 COPY run.py /run.py
 RUN chmod a+x /run.py
 
-# Comando de ejecución
+# Comando de ejecución principal
 CMD [ "python3", "/run.py" ]
