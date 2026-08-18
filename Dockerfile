@@ -7,7 +7,7 @@ LABEL \
     io.hass.version="$BUILD_VERSION" \
     io.hass.type="addon"
 
-# 1. Instalar herramientas base del sistema, compiladores y certificados
+# 1. Instalar herramientas base del sistema, compiladores, certificados y soporte HTTPS para apk
 RUN apk add --no-cache \
     unixodbc \
     unixodbc-dev \
@@ -16,9 +16,10 @@ RUN apk add --no-cache \
     make \
     curl \
     gnupg \
-    ca-certificates
+    ca-certificates \
+    apk-tools
 
-# CONFIGURACIÓN DE LA URL COMPLETA (Subdominio oficial de descargas de Microsoft)
+# Definición del entorno oficial de descargas de Microsoft
 ENV MS_DOMINIO="https://packages.microsoft.com"
 ENV MS_LLAVE="/keys/microsoft.asc"
 ENV MS_REPO_ALPINE="/alpine/v3.19/prod/"
@@ -26,7 +27,7 @@ ENV MS_REPO_ALPINE="/alpine/v3.19/prod/"
 # 2. Descargar e importar la llave pública criptográfica oficial de Microsoft
 RUN curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -fsSL "${MS_DOMINIO}${MS_LLAVE}" | gpg --import -
 
-# 3. Añadir el repositorio oficial uniendo las variables directamente al archivo maestro de Alpine
+# 3. Añadir el repositorio oficial directamente al archivo maestro de Alpine
 RUN echo "${MS_DOMINIO}${MS_REPO_ALPINE}" >> /etc/apk/repositories
 
 # 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
