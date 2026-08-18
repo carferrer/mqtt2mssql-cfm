@@ -1,0 +1,56 @@
+name: Actualizar CHANGELOG automáticamente
+
+on:
+  release:
+    types: [published]
+    
+  workflow_dispatch:
+    inputs:
+        motivo:
+          description: 'Ejecución manual'
+          required: false
+
+
+permissions:
+  contents: write
+
+jobs:
+  update-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Desplegar código
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # Forzamos la descarga de la rama principal en lugar de la etiqueta de la release
+          ref: main
+
+      - name: Actualizar archivo CHANGELOG.md
+        run: |
+          # 1. Obtener la fecha actual en formato AAAA-MM-DD
+          FECHA=$(date +%Y-%m-%d)
+          
+          # 2. Crear el archivo si no existe
+          touch CHANGELOG.md
+          
+          # 3. Guardar el contenido actual temporalmente
+          cat CHANGELOG.md > old_changelog.txt
+          
+          # 4. Escribir el título con la versión, la fecha y las notas nativas de GitHub
+          echo -e "# Versión ${{ github.event.release.tag_name }} ($FECHA)\n" > CHANGELOG.md
+          echo -e "${{ github.event.release.body }}\n" >> CHANGELOG.md
+          
+          # 5. Volver a añadir el historial antiguo debajo
+          cat old_changelog.txt >> CHANGELOG.md
+          
+          # 6. Limpiar archivo temporal
+          rm old_changelog.txt
+
+      - name: Subir cambios al repositorio
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore: actualizar CHANGELOG.md para la versión ${{ github.event.release.tag_name }} [skip ci]"
+          # Especificamos explícitamente el destino del push hacia la rama remota
+          git push origin main
