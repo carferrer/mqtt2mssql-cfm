@@ -1,0 +1,17 @@
+name: "Puente MQTT a MSSQL"
+version: "2028.08.01"
+slug: "mqtt2mssql-cfm"
+description: "Escucha datos por MQTT y ejecuta INSERTS complejos en MSSQL usando pyodbc nativo"
+arch:
+  - amd64
+  - aarch64
+init: false
+options:
+  mqtt_host: "core-mosquitto"
+  mqtt_port: 1883
+schema:
+  mqtt_host: str
+  mqtt_port: int
+build_from:
+  amd64: "ghcr.io/home-assistant/amd64-base-alpine:3.19"
+  aarch64: "ghcr.io/home-assistant/aarch64-base-alpine:3.19"
