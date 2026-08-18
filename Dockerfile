@@ -17,7 +17,7 @@ RUN apk add --no-cache \
     curl \
     gnupg \
     ca-certificates \
-    apk-tools
+    apk-tools-via-https
 
 # Definición del entorno oficial de descargas de Microsoft
 ENV MS_DOMINIO="https://packages.microsoft.com"
