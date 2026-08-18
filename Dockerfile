@@ -18,9 +18,8 @@ RUN apk add --no-cache \
     gnupg \
     ca-certificates
 
-# Separamos el dominio y las rutas usando comillas independientes
-# de esta forma el formateador automático no puede alterar ni recortar las direcciones
-ENV MS_DOMINIO="https://microsoft.com"
+# CONFIGURACIÓN DE LA URL COMPLETA (Subdominio oficial de descargas de Microsoft)
+ENV MS_DOMINIO="https://packages.microsoft.com"
 ENV MS_LLAVE="/keys/microsoft.asc"
 ENV MS_REPO_ALPINE="/alpine/v3.19/prod/"
 
