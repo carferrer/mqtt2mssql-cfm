@@ -66,7 +66,7 @@ def ejecutar_sql_puro(query_text):
         if conn:
             conn.close()
 
-def on_message(client, userdata, msg):
+def on_message(client, userdata, msg, properties=None):
     """Se ejecuta cada vez que llega una sentencia por MQTT."""
     try:
         # Decodifica el payload MQTT directamente a texto plano (tu consulta SQL)
@@ -79,18 +79,17 @@ def on_message(client, userdata, msg):
         print(f"[ERROR MQTT] No se pudo decodificar el mensaje: {e}", file=sys.stderr)
 
 # Configuración del cliente MQTT con ID fijo y sesión persistente
+# Configuración del cliente MQTT con la API moderna VERSION2
 CLIENT_ID = MQTT_ID
 
-# NOTA DE COMPATIBILIDAD: Las versiones modernas de paho-mqtt exigen definir la API v1 o v2.
-# Usamos CallbackAPIVersion.VERSION1 para asegurar compatibilidad total con scripts tradicionales.
 try:
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=CLIENT_ID, clean_session=False)
+    # Usamos la API v2 oficial moderna para eliminar el DeprecationWarning
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID, clean_session=False)
 except AttributeError:
-    # Si la imagen usa una versión antigua de paho-mqtt que no requiere la API version, hace fallback
+    # Fallback de seguridad por si acaso
     client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)
 
 client.on_message = on_message
-
 # ==========================================
 # SOLUCIÓN: CONFIGURAR CREDENCIALES MQTT
 # ==========================================
