@@ -1,6 +1,9 @@
 # Usamos la imagen oficial de Python en Alpine Linux (Independiente de HA)
 FROM python:3.11-alpine3.19
 
+ARG BUILD_VERSION=latest
+LABEL io.hass.version="$BUILD_VERSION" io.hass.type="addon" io.hass.arch="aarch64|amd64"
+
 # Instalar dependencias del sistema y herramientas de compilación
 RUN apk add --no-cache \
     unixodbc \
