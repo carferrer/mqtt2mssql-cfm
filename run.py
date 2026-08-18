@@ -22,6 +22,8 @@ MSSQL_PWD = config_data.get("mssql_password")
 
 MQTT_HOST = config_data.get("mqtt_host", "core-mosquitto")
 MQTT_PORT = config_data.get("mqtt_port", 1883)
+MQTT_ID = config_data.get("mqtt_id", "mqtt2mssql")
+MQTT_TOPIC = config_data.get("mqtt_topic", "topic-mqtt2mssql")
 
 # Construcción de la cadena de conexión con las variables del Add-on
 CONNECTION_STRING = (
@@ -75,7 +77,7 @@ def on_message(client, userdata, msg):
         print(f"[ERROR MQTT] No se pudo decodificar el mensaje: {e}", file=sys.stderr)
 
 # Configuración del cliente MQTT con ID fijo y sesión persistente
-CLIENT_ID = "ha_mssql_bridge_addon"
+CLIENT_ID = MQTT_ID
 client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)
 client.on_message = on_message
 
@@ -83,7 +85,7 @@ print("[INFO] Iniciando el puente HA-MSSQL con credenciales dinámicas...")
 print(f"[INFO] Conectando al bróker MQTT ({MQTT_HOST}:{MQTT_PORT})...")
 client.connect(MQTT_HOST, MQTT_PORT, 60)
 
-TOPICO_SQL = "homeassistant/mssql/execute"
+TOPICO_SQL = MQTT_TOPIC
 # qos=1 para asegurar que no se pierda ninguna sentencia si el add-on parpadea
 client.subscribe(TOPICO_SQL, qos=1)
 print(f"[INFO] Conectando a MSSQL en el servidor: {MSSQL_SERVER}:{MSSQL_PORT}")
