@@ -14,24 +14,23 @@ RUN apk add --no-cache \
     curl \
     gnupg
 
-# Añadir las llaves y el repositorio oficial de Microsoft para Alpine
-RUN curl -O https://microsoft.com && \
-    gpg --import microsoft.asc && \
-    curl -O https://microsoft.com && \
-    mv prod.list /etc/apk/repositories.d/mssql-release.repo
+# 2. Descargar la llave pública de Microsoft e importar al llavero de GPG
+RUN curl -sSL https://microsoft.com | gpg --import -
 
-# Instalar el driver oficial de Microsoft ODBC 18 para SQL Server
+# 3. Añadir el repositorio oficial específico de Microsoft para Alpine 3.19
+RUN curl -sSL -o /etc/apk/repositories.d/mssql-release.repo https://microsoft.com
+
+# 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft
+# ACCEPT_EULA=Y acepta la licencia obligatoria en modo silencioso
 RUN apk update && \
     ACCEPT_EULA=Y apk add --no-cache msodbcsql18
 
-# Instalar los paquetes de Python requeridos (En Alpine puro usamos pip sin restricciones)
-RUN pip3 install --no-cache-dir \
-    paho-mqtt \
-    pyodbc
+# 5. Instalar las librerías de Python requeridas
+RUN pip3 install --no-cache-dir paho-mqtt pyodbc
 
-# Copiar el código fuente del add-on
+# 6. Copiar el script que lee la configuración de la interfaz e inicia el bucle MQTT
 COPY run.py /run.py
 RUN chmod a+x /run.py
 
-# Comando de inicio
+# Comando de ejecución
 CMD [ "python3", "/run.py" ]
