@@ -1,35 +1,38 @@
-# Usamos Debian Slim como base estable
-FROM python:3.11-slim-bookworm
+# Usamos la imagen oficial de Python en Alpine Linux (Universal para AMD64 y ARM)
+FROM python:3.11-alpine3.19
 
-# 1. Instalar herramientas del sistema y dependencias de compilación
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
-    build-essential \
+# 1. Instalar herramientas base del sistema, compiladores y certificados
+RUN apk add --no-cache \
     unixodbc \
     unixodbc-dev \
-    && rm -rf /var/lib/apt/lists/*
+    gcc \
+    g++ \
+    make \
+    curl \
+    gnupg \
+    ca-certificates
 
-# Truco de ensamblado: dividimos la dirección exacta para que no sufra ningún recorte de texto
-ENV ENLACE_BASE="https://packages.microsoft.com"
-ENV RUTA_PAQUETE="/config/debian/12/packages-microsoft-prod.deb"
+# Truco de ensamblado: Protegemos la URL para que no sufra ningún recorte de texto
+ENV ENLACE_BASE="https://microsoft.com"
+ENV RUTA_LLAVE="/keys/microsoft.asc"
+ENV RUTA_REPO="/config/alpine/3.19/prod.list"
 
-# 2. Descargar e instalar el configurador automático uniendo las dos partes de forma exacta
-RUN curl -A "Mozilla/5.0" -fsSLO "${ENLACE_BASE}${RUTA_PAQUETE}" \
-    && dpkg -i packages-microsoft-prod.deb \
-    && rm packages-microsoft-prod.deb
+# 2. Descargar la llave pública de Microsoft usando un User-Agent limpio e importar a GPG
+RUN curl -A "Mozilla/5.0" -fsSL "${ENLACE_BASE}${RUTA_LLAVE}" | gpg --import -
 
-# 3. Actualizar la lista de APT e instalar MS ODBC 18
-RUN apt-get update && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
-    msodbcsql18 \
-    && rm -rf /var/lib/apt/lists/*
+# 3. Añadir el repositorio oficial específico de Microsoft para Alpine 3.19
+RUN curl -A "Mozilla/5.0" -fsSL -o /etc/apk/repositories.d/mssql-release.repo "${ENLACE_BASE}${RUTA_REPO}"
 
-# 4. Instalar las librerías de Python requeridas
+# 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
+RUN apk update && \
+    ACCEPT_EULA=Y apk add --no-cache msodbcsql18
+
+# 5. Instalar las librerías de Python requeridas
 RUN pip3 install --no-cache-dir paho-mqtt pyodbc
 
-# 5. Copiar tu script ejecutor de Python al contenedor
+# 6. Copiar el script ejecutor
 COPY run.py /run.py
 RUN chmod a+x /run.py
 
-# Comando de ejecución principal
+# Comando de ejecución
 CMD [ "python3", "/run.py" ]
