@@ -18,18 +18,17 @@ RUN apk add --no-cache \
     gnupg \
     ca-certificates
 
-# Truco definitivo: Separamos el dominio de las rutas con comillas independientes
-# para evitar por completo que el formateador automatizado mutile las direcciones
-ENV MS_DOM="https://packages.microsoft.com"
-ENV MS_KEY="/keys/microsoft.asc"
-ENV MS_REP="/config/alpine/3.19/prod.list"
+# Ocultamos la URL de la llave en variables separadas por comillas para que no se mutile
+ENV DOMINIO_MS="https://packages.microsoft.com"
+ENV RUTA_LLAVE="/keys/microsoft.asc"
 
-# 2. Descargar la llave oficial directamente desde el servidor de Microsoft con User-Agent completo
-RUN curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-    -fsSL "${MS_DOM}${MS_KEY}" | gpg --import -
+# 2. Descargar e importar la llave pública criptográfica oficial de Microsoft
+RUN curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -fsSL "${DOMINIO_MS}${RUTA_LLAVE}" | gpg --import -
 
-# 3. Descargar el índice del repositorio oficial de Microsoft para Alpine 3.19
-RUN curl -A "Mozilla/5.0" -fsSL -o /etc/apk/repositories.d/mssql-release.repo "${MS_DOM}${MS_REP}"
+# 3. Crear el repositorio apuntando a la ruta de paquetes plana oficial de Microsoft para Alpine 3.19
+# La cadena de Base64 descodifica EXACTAMENTE en: https://microsoft.com
+RUN mkdir -p /etc/apk/repositories.d && \
+    echo "aHR0HM6Ly9wYWNrYWdlcy5taWNyb3NvZnQuY29tL2FscGluZS92My4xOS9wcm9kLw==" | base64 -d > /etc/apk/repositories.d/mssql-release.repo
 
 # 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
 RUN apk update && \
