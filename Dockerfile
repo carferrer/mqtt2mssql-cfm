@@ -18,27 +18,27 @@ RUN apk add --no-cache \
     gnupg \
     ca-certificates
 
-# Separamos las URLs en fragmentos para evitar recortes de texto en el formateador
-ENV URL_DOMINIO="https://microsoft.com"
-ENV URL_LLAVE="/keys/microsoft.asc"
-ENV URL_REPO="/config/alpine/3.19/prod.list"
+# 2. Descargar la llave oficial de Microsoft desde el servidor de claves públicas de Ubuntu
+# Usamos la dirección limpia y el hash oficial sin intermediarios
+RUN gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys BC528686B50D79E339D3721CEB3E94ADBE1229CF
 
-# 2. Descargar la llave pública de Microsoft apuntando al subdominio correcto
-RUN curl -A "Mozilla/5.0" -fsSL "${URL_DOMINIO}${URL_LLAVE}" | gpg --import -
+# 3. Descargar el archivo del repositorio inyectando la URL real oculta en Base64
+# La cadena decodifica exactamente: https://microsoft.com
+RUN mkdir -p /etc/apk/repositories.d && \
+    echo "aHR0cHM6Ly9wYWNrYWdlcy5taWNyb3NvZnQuY29tL2NvbmZpZy9hbHBpbmUvMy4xOS9wcm9kLmxpc3Q=" | base64 -d > /tmp/url.txt && \
+    curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -fsSL -o /etc/apk/repositories.d/mssql-release.repo $(cat /tmp/url.txt) && \
+    rm /tmp/url.txt
 
-# 3. Añadir el repositorio oficial específico de Microsoft para Alpine 3.19
-RUN curl -A "Mozilla/5.0" -fsSL -o /etc/apk/repositories.d/mssql-release.repo "${URL_DOMINIO}${URL_REPO}"
-
-# 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
+# 4. Actualizar los índices de los repositorios e instalar el Driver ODBC 18 de Microsoft
 RUN apk update && \
     ACCEPT_EULA=Y apk add --no-cache msodbcsql18
 
 # 5. Instalar las librerías de Python requeridas
 RUN pip3 install --no-cache-dir paho-mqtt pyodbc
 
-# 6. Copiar el script ejecutor
+# 6. Copiar el script ejecutor de Python al contenedor
 COPY run.py /run.py
 RUN chmod a+x /run.py
 
-# Comando de ejecución
+# Comando de ejecución principal
 CMD [ "python3", "/run.py" ]
