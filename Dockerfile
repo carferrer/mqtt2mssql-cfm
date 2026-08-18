@@ -5,7 +5,8 @@ FROM python:3.11-slim-bookworm
 ARG BUILD_VERSION=latest
 LABEL \
     io.hass.version="$BUILD_VERSION" \
-    io.hass.type="addon"
+    io.hass.type="addon" \
+    io.hass.arch="aarch64|amd64"
 
 ENV PYTHONUNBUFFERED=1
 
