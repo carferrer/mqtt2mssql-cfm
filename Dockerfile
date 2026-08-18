@@ -18,25 +18,27 @@ RUN apk add --no-cache \
     gnupg \
     ca-certificates
 
-# 2. Descargar la llave oficial de Microsoft desde el servidor de claves públicas de Ubuntu
-# Usamos la dirección limpia y el hash oficial sin intermediarios
-RUN gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys BC528686B50D79E339D3721CEB3E94ADBE1229CF
+# Truco definitivo: Separamos el dominio de las rutas con comillas independientes
+# para evitar por completo que el formateador automatizado mutile las direcciones
+ENV MS_DOM="https://packages.microsoft.com"
+ENV MS_KEY="/keys/microsoft.asc"
+ENV MS_REP="/config/alpine/3.19/prod.list"
 
-# 3. Descargar el archivo del repositorio inyectando la URL real oculta en Base64
-# La cadena decodifica exactamente: https://microsoft.com
-RUN mkdir -p /etc/apk/repositories.d && \
-    echo "aHR0cHM6Ly9wYWNrYWdlcy5taWNyb3NvZnQuY29tL2NvbmZpZy9hbHBpbmUvMy4xOS9wcm9kLmxpc3Q=" | base64 -d > /tmp/url.txt && \
-    curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -fsSL -o /etc/apk/repositories.d/mssql-release.repo $(cat /tmp/url.txt) && \
-    rm /tmp/url.txt
+# 2. Descargar la llave oficial directamente desde el servidor de Microsoft con User-Agent completo
+RUN curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+    -fsSL "${MS_DOM}${MS_KEY}" | gpg --import -
 
-# 4. Actualizar los índices de los repositorios e instalar el Driver ODBC 18 de Microsoft
+# 3. Descargar el índice del repositorio oficial de Microsoft para Alpine 3.19
+RUN curl -A "Mozilla/5.0" -fsSL -o /etc/apk/repositories.d/mssql-release.repo "${MS_DOM}${MS_REP}"
+
+# 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
 RUN apk update && \
     ACCEPT_EULA=Y apk add --no-cache msodbcsql18
 
 # 5. Instalar las librerías de Python requeridas
 RUN pip3 install --no-cache-dir paho-mqtt pyodbc
 
-# 6. Copiar el script ejecutor de Python al contenedor
+# 6. Copiar el script ejecutor
 COPY run.py /run.py
 RUN chmod a+x /run.py
 
