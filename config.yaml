@@ -27,5 +27,5 @@ schema:
   mssql_password: password # Al poner 'password', Home Assistant oculta el texto en la interfaz por seguridadbuild_from:
 # Aquí defines qué imagen sustituirá a $BUILD_FROM
 build_from:
-  amd64: "ghcr.io/home-assistant/amd64-base-alpine:3.19"
-  aarch64: "ghcr.io/home-assistant/aarch64-base-alpine:3.19"
+  amd64: "homeassistant/amd64-base-alpine:3.19"
+  aarch64: "homeassistant/aarch64-base-alpine:3.19"
