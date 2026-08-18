@@ -7,6 +7,8 @@ LABEL \
     io.hass.version="$BUILD_VERSION" \
     io.hass.type="addon"
 
+ENV PYTHONUNBUFFERED=1
+
 # 1. Instalar herramientas indispensables del sistema Ubuntu/Debian y limpiar cachés
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
