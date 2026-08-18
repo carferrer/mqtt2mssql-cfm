@@ -7,7 +7,7 @@ LABEL \
     io.hass.version="$BUILD_VERSION" \
     io.hass.type="addon"
 
-# 1. Instalar herramientas base del sistema, compiladores y certificados globales
+# 1. Instalar herramientas base del sistema, compiladores y certificados
 RUN apk add --no-cache \
     unixodbc \
     unixodbc-dev \
@@ -18,18 +18,16 @@ RUN apk add --no-cache \
     gnupg \
     ca-certificates
 
-# Definición del entorno oficial de descargas de Microsoft
-ENV MS_DOMINIO="https://microsoft.com"
-ENV MS_LLAVE="/keys/microsoft.asc"
-ENV MS_REPO_ALPINE="/alpine/v3.19/prod/"
+# 2. IMPORTACIÓN LOCAL DE LA LLAVE
+# Copiamos el archivo físico creado en tu PC e importamos a GPG
+COPY microsoft.asc /tmp/microsoft.asc
+RUN gpg --import /tmp/microsoft.asc && rm /tmp/microsoft.asc
 
-# 2. Descargar e importar la llave pública criptográfica oficial de Microsoft
-RUN curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -fsSL "${MS_DOMINIO}${MS_LLAVE}" | gpg --import -
+# 3. CONFIGURACIÓN LOCAL DEL REPOSITORIO
+# Copiamos tu archivo local directamente a la ruta maestra de Alpine
+COPY prod.list /etc/apk/repositories.d/mssql-release.repo
 
-# 3. Añadir el repositorio oficial directamente al archivo maestro de Alpine
-RUN echo "${MS_DOMINIO}${MS_REPO_ALPINE}" >> /etc/apk/repositories
-
-# 4. Actualizar índices e instalar msodbcsql18 saltando el bloqueo de red restrictivo de MS
+# 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
 RUN apk update && \
     ACCEPT_EULA=Y apk add --no-cache --allow-untrusted msodbcsql18
 
