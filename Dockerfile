@@ -1,10 +1,8 @@
-ARG BUILD_FROM=homeassistant/amd64-base-alpine:3.19
-FROM $BUILD_FROM
+# Usamos la imagen oficial de Python en Alpine Linux (Independiente de HA)
+FROM python:3.11-alpine3.19
 
 # Instalar dependencias del sistema y herramientas de compilación
 RUN apk add --no-cache \
-    python3 \
-    py3-pip \
     unixodbc \
     unixodbc-dev \
     gcc \
@@ -20,12 +18,11 @@ RUN curl -O https://microsoft.com && \
     mv prod.list /etc/apk/repositories.d/mssql-release.repo
 
 # Instalar el driver oficial de Microsoft ODBC 18 para SQL Server
-# ACCEPT_EULA=Y es obligatorio para aceptar los términos de Microsoft
 RUN apk update && \
     ACCEPT_EULA=Y apk add --no-cache msodbcsql18
 
-# Instalar los paquetes de Python requeridos
-RUN pip3 install --no-cache-dir --break-system-packages \
+# Instalar los paquetes de Python requeridos (En Alpine puro usamos pip sin restricciones)
+RUN pip3 install --no-cache-dir \
     paho-mqtt \
     pyodbc
 
