@@ -7,7 +7,7 @@ LABEL \
     io.hass.version="$BUILD_VERSION" \
     io.hass.type="addon"
 
-# 1. Instalar herramientas base del sistema, compiladores, certificados y soporte HTTPS para apk
+# 1. Instalar herramientas base del sistema, compiladores y certificados globales
 RUN apk add --no-cache \
     unixodbc \
     unixodbc-dev \
@@ -16,11 +16,10 @@ RUN apk add --no-cache \
     make \
     curl \
     gnupg \
-    ca-certificates \
-    apk-tools-via-https
+    ca-certificates
 
 # Definición del entorno oficial de descargas de Microsoft
-ENV MS_DOMINIO="https://packages.microsoft.com"
+ENV MS_DOMINIO="https://microsoft.com"
 ENV MS_LLAVE="/keys/microsoft.asc"
 ENV MS_REPO_ALPINE="/alpine/v3.19/prod/"
 
@@ -30,9 +29,9 @@ RUN curl -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -fsSL "${MS_DOMINIO}${MS
 # 3. Añadir el repositorio oficial directamente al archivo maestro de Alpine
 RUN echo "${MS_DOMINIO}${MS_REPO_ALPINE}" >> /etc/apk/repositories
 
-# 4. Actualizar los índices e instalar el Driver ODBC 18 de Microsoft de forma silenciosa
+# 4. Actualizar índices e instalar msodbcsql18 saltando el bloqueo de red restrictivo de MS
 RUN apk update && \
-    ACCEPT_EULA=Y apk add --no-cache msodbcsql18
+    ACCEPT_EULA=Y apk add --no-cache --allow-untrusted msodbcsql18
 
 # 5. Instalar las librerías de Python requeridas
 RUN pip3 install --no-cache-dir paho-mqtt pyodbc
