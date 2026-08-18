@@ -1,5 +1,5 @@
 name: "Puente MQTT a MSSQL"
-version: "2028.08.04"
+version: "2028.08.05"
 slug: "mqtt2mssql-cfm"
 description: "Escucha datos por MQTT y ejecuta INSERTS complejos en MSSQL usando pyodbc nativo"
 #url: "https://github.com/carferrer/mqtt2mssql-cfm"
@@ -12,6 +12,8 @@ init: false
 options:
   mqtt_host: "core-mosquitto"
   mqtt_port: 1883
+  mqtt_id: "mqtt2mssql"
+  mqtt_topic: "topic-mqtt2mssql"
   mssql_server: "192.168.1.X"
   mssql_port: 1433
   mssql_database: "TuBaseDatos"
@@ -20,6 +22,8 @@ options:
 schema:
   mqtt_host: str
   mqtt_port: int
+  mqtt_id: str
+  mqtt_topic: str
   mssql_server: str
   mssql_port: int
   mssql_database: str
