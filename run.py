@@ -22,6 +22,8 @@ MSSQL_PWD = config_data.get("mssql_password")
 
 MQTT_HOST = config_data.get("mqtt_host", "core-mosquitto")
 MQTT_PORT = config_data.get("mqtt_port", 1883)
+MQTT_USER = config_data.get("mqtt_user", "mqtt2mssql")
+MQTT_PWD = config_data.get("mqtt_password", "mqtt2mssql")
 MQTT_ID = config_data.get("mqtt_id", "mqtt2mssql")
 MQTT_TOPIC = config_data.get("mqtt_topic", "topic-mqtt2mssql")
 
