@@ -1,3 +1,7 @@
+# Versión 2028.08.31 (2026-08-19)
+
+**Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/v2028.08.30...2028.08.31
+
 # Versión v2028.08.30 (2026-08-19)
 
 Cambios detectados en config.yaml.
