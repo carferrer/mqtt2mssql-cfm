@@ -36,7 +36,7 @@ RUN apt-get update && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 5. Instalar las librerías de Python requeridas (Mqtt y el compilador de pyodbc)
-RUN pip3 install --no-cache-dir paho-mqtt pyodbc
+RUN pip3 install --no-cache-dir paho-mqtt pyodbc aioodbc
 
 # 6. Copiar el script ejecutor de tu Add-on al contenedor
 COPY run.py /run.py
