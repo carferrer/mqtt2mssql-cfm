@@ -63,12 +63,12 @@ async def inicializar_pool_mssql():
     while True:
         try:
             logging.info(f"Abriendo Pool de 10 conexiones persistentes con MSSQL ({MSSQL_SERVER})...")
+            # SOLUCIÓN: Eliminamos 'loop=loop' para compatibilidad con el motor de Python actual
             pool_mssql = await aioodbc.create_pool(
                 dsn=CONNECTION_STRING, 
                 minsize=5, 
-                maxsize=10, # <-- Abre hasta 10 sesiones en tu MSSQL
-                loop=loop,
-                autocommit=True # Inyección directa ultrarrápida
+                maxmaxsize=10, 
+                autocommit=True
             )
             logging.info("Pool dinámico establecido. 10 canales listos para ráfagas.")
             break
