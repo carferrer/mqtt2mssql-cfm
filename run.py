@@ -3,39 +3,62 @@ import asyncio
 import logging
 import paho.mqtt.client as mqtt
 import asyncodbc
+import json
 import os
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN
+# CARGAR CONFIGURACIÓN DEL ADD-ON
 # ---------------------------------------------------------
-MQTT_HOST = os.getenv("MQTT_HOST", "core-mosquitto")
-MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
-MQTT_TOPIC = os.getenv("MQTT_TOPIC", "mqtt2mssql/query")
-MQTT_USER = os.getenv("MQTT_USER", "")
-MQTT_PASS = os.getenv("MQTT_PASS", "")
+CONFIG_PATH = "/data/options.json"
 
-MSSQL_CONN_STR = os.getenv(
-    "MSSQL_CONN",
-    "DRIVER={ODBC Driver 18 for SQL Server};"
-    "SERVER=192.168.1.100,1433;"
-    "DATABASE=MiBase;"
-    "UID=sa;"
-    "PWD=MiPassword;"
-    "Encrypt=no;"
+try:
+    with open(CONFIG_PATH, "r") as f:
+        config_data = json.load(f)
+except Exception as e:
+    print(f"ERROR cargando configuración {CONFIG_PATH}: {e}")
+    config_data = {}
+
+# ---------------------------------------------------------
+# CONFIGURACIÓN MSSQL
+# ---------------------------------------------------------
+MSSQL_SERVER = config_data.get("mssql_server", "mssqlserver")
+MSSQL_PORT = config_data.get("mssql_port", 1433)
+MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
+MSSQL_USER = config_data.get("mssql_user", "mssqluser")
+MSSQL_PWD = config_data.get("mssql_password", "mssqlpwd")
+
+MSSQL_CONN_STR = (
+    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+    f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
+    f"DATABASE={MSSQL_DB};"
+    f"UID={MSSQL_USER};"
+    f"PWD={MSSQL_PWD};"
+    f"Encrypt=no;"
+    f"TrustServerCertificate=yes;"
 )
 
-POOL_SIZE = 10
+# ---------------------------------------------------------
+# CONFIGURACIÓN MQTT
+# ---------------------------------------------------------
+MQTT_HOST = config_data.get("mqtt_host", "core-mosquitto")
+MQTT_PORT = config_data.get("mqtt_port", 1883)
+MQTT_USER = config_data.get("mqtt_user", "")
+MQTT_PWD = config_data.get("mqtt_password", "")
+MQTT_ID = config_data.get("mqtt_id", "mqtt2mssqlid")
+MQTT_TOPIC = config_data.get("mqtt_topic", "mqtt2mssql/query")
 
 # ---------------------------------------------------------
 # LOGGING
 # ---------------------------------------------------------
+LOG_LEVEL = config_data.get("log_level", "INFO").upper()
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
 # ---------------------------------------------------------
-# EVENT LOOP GLOBAL (SOLUCIÓN AL ERROR)
+# EVENT LOOP GLOBAL
 # ---------------------------------------------------------
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
@@ -73,7 +96,6 @@ def on_message(client, userdata, msg):
 
         logging.info(f"MQTT recibido → {query}")
 
-        # Enviar tarea al event loop principal
         asyncio.run_coroutine_threadsafe(queue.put(query), loop)
 
     except Exception as e:
@@ -83,10 +105,10 @@ def on_message(client, userdata, msg):
 # MQTT CLIENT
 # ---------------------------------------------------------
 def iniciar_mqtt():
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, "mqtt2mssqlid")
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, MQTT_ID)
 
     if MQTT_USER:
-        client.username_pw_set(MQTT_USER, MQTT_PASS)
+        client.username_pw_set(MQTT_USER, MQTT_PWD)
 
     client.on_message = on_message
 
@@ -104,17 +126,21 @@ def iniciar_mqtt():
 async def main():
     logging.info("Creando pool MSSQL...")
 
-    pool = await asyncodbc.create_pool(
-        dsn=MSSQL_CONN_STR,
-        minsize=POOL_SIZE,
-        maxsize=POOL_SIZE,
-        autocommit=True
-    )
+    try:
+        pool = await asyncodbc.create_pool(
+            dsn=MSSQL_CONN_STR,
+            minsize=10,
+            maxsize=10,
+            autocommit=True
+        )
+    except Exception as e:
+        logging.error(f"Error creando pool MSSQL: {e}")
+        raise
 
-    logging.info(f"Pool MSSQL creado con {POOL_SIZE} conexiones.")
+    logging.info("Pool MSSQL creado correctamente.")
 
     # Lanzar workers SQL
-    for _ in range(POOL_SIZE):
+    for _ in range(10):
         loop.create_task(worker_sql(pool))
 
     # Iniciar MQTT
