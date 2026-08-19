@@ -39,6 +39,7 @@ jobs:
       if: steps.check_tag.outputs.exists == 'false'
       uses: softprops/action-gh-release@v2
       with:
+        token: ${{ secrets.PARA_GERERAR_RELEASES }}
         tag_name: v${{ steps.get_version.outputs.version }}
         name: Release v${{ steps.get_version.outputs.version }}
         body: |
