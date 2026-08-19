@@ -1,135 +1,137 @@
-import sys
-import json
-import logging
+#!/usr/bin/env python3
 import asyncio
+import logging
 import paho.mqtt.client as mqtt
-import asyncodbc   # ← Migración completa desde aioodbc
+import asyncodbc
+import os
 
-CONFIG_PATH = "/data/options.json"
+# ---------------------------------------------------------
+# CONFIGURACIÓN
+# ---------------------------------------------------------
+MQTT_HOST = os.getenv("MQTT_HOST", "core-mosquitto")
+MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
+MQTT_TOPIC = os.getenv("MQTT_TOPIC", "mqtt2mssql/query")
+MQTT_USER = os.getenv("MQTT_USER", "")
+MQTT_PASS = os.getenv("MQTT_PASS", "")
 
-# ---------------- CONFIG ----------------
-try:
-    with open(CONFIG_PATH, "r") as f:
-        config_data = json.load(f)
-except Exception as e:
-    print(f"[CRITICAL] No se pudo leer la configuración del Add-on: {e}", file=sys.stderr)
-    sys.exit(1)
+MSSQL_CONN_STR = os.getenv(
+    "MSSQL_CONN",
+    "DRIVER={ODBC Driver 18 for SQL Server};"
+    "SERVER=192.168.1.100,1433;"
+    "DATABASE=MiBase;"
+    "UID=sa;"
+    "PWD=MiPassword;"
+    "Encrypt=no;"
+)
 
-LOG_LEVEL = config_data.get("log_level", "INFO").upper()
+POOL_SIZE = 10
 
+# ---------------------------------------------------------
+# LOGGING
+# ---------------------------------------------------------
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    stream=sys.stdout
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-MSSQL_SERVER = config_data.get("mssql_server", "mssqlserver")
-MSSQL_PORT = config_data.get("mssql_port", 1433)
-MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
-MSSQL_USER = config_data.get("mssql_user", "mssqluser")
-MSSQL_PWD = config_data.get("mssql_password", "mssqlpwd")
+# ---------------------------------------------------------
+# EVENT LOOP GLOBAL (SOLUCIÓN AL ERROR)
+# ---------------------------------------------------------
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
-MQTT_HOST = config_data.get("mqtt_host", "core-mosquitto")
-MQTT_PORT = config_data.get("mqtt_port", 1883)
-MQTT_USER = config_data.get("mqtt_user", "mqttuser")
-MQTT_PWD = config_data.get("mqtt_password", "mqttpwd")
-MQTT_ID = config_data.get("mqtt_id", "mqttid")
-MQTT_TOPIC = config_data.get("mqtt_topic", "mqtt2mssqltopic")
-
-CONNECTION_STRING = (
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
-    f"DATABASE={MSSQL_DB};"
-    f"UID={MSSQL_USER};"
-    f"PWD={MSSQL_PWD};"
-    f"TrustServerCertificate=yes;"
-)
-
-# ---------------- GLOBALS ----------------
+# ---------------------------------------------------------
+# COLA FIFO
+# ---------------------------------------------------------
 queue = asyncio.Queue()
-pool_mssql = None
 
-# ---------------- POOL ----------------
-async def inicializar_pool_mssql():
-    global pool_mssql
-    while True:
-        try:
-            logging.info("Creando pool MSSQL (10 conexiones)...")
-
-            if pool_mssql:
-                pool_mssql.close()
-                await pool_mssql.wait_closed()
-
-            pool_mssql = await asyncodbc.create_pool(
-                dsn=CONNECTION_STRING,
-                minsize=5,
-                maxsize=10,
-                autocommit=True
-            )
-
-            logging.info("Pool MSSQL listo.")
-            return
-        except Exception as e:
-            logging.error(f"Error creando pool: {e}. Reintentando en 5s...")
-            await asyncio.sleep(5)
-
-# ---------------- WORKERS ----------------
-async def worker_sql():
-    global pool_mssql
-
+# ---------------------------------------------------------
+# WORKER SQL
+# ---------------------------------------------------------
+async def worker_sql(pool):
     while True:
         query_text = await queue.get()
         try:
-            async with pool_mssql.acquire() as conn:
+            async with pool.acquire() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute(query_text)
-                    logging.info("Consulta ejecutada correctamente.")
+                    logging.info(f"SQL ejecutado correctamente: {query_text}")
         except Exception as e:
             logging.error(f"Error ejecutando SQL: {e}")
-            logging.debug(f"Query:\n{query_text}")
         finally:
             queue.task_done()
 
-# ---------------- MQTT ----------------
-def on_message(client, userdata, msg, properties=None):
+# ---------------------------------------------------------
+# PROCESAR MENSAJE MQTT
+# ---------------------------------------------------------
+def on_message(client, userdata, msg):
     try:
         query = msg.payload.decode("utf-8").strip()
-        if not query:
-            return
 
         if not query.endswith(";"):
             query += ";"
 
-        asyncio.run_coroutine_threadsafe(queue.put(query), asyncio.get_event_loop())
-        logging.debug("Consulta añadida a la cola FIFO.")
+        logging.info(f"MQTT recibido → {query}")
+
+        # Enviar tarea al event loop principal
+        asyncio.run_coroutine_threadsafe(queue.put(query), loop)
+
     except Exception as e:
         logging.error(f"Error procesando mensaje MQTT: {e}")
 
-# ---------------- MAIN ----------------
-async def main():
-    await inicializar_pool_mssql()
+# ---------------------------------------------------------
+# MQTT CLIENT
+# ---------------------------------------------------------
+def iniciar_mqtt():
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, "mqtt2mssqlid")
 
-    for _ in range(10):
-        asyncio.create_task(worker_sql())
+    if MQTT_USER:
+        client.username_pw_set(MQTT_USER, MQTT_PASS)
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MQTT_ID, clean_session=True)
     client.on_message = on_message
 
-    if MQTT_USER and MQTT_PWD:
-        client.username_pw_set(MQTT_USER, MQTT_PWD)
-
-    logging.info("Conectando a MQTT...")
     client.connect(MQTT_HOST, MQTT_PORT, 60)
-    client.subscribe(MQTT_TOPIC, qos=1)
+    client.subscribe(MQTT_TOPIC)
+
     client.loop_start()
+    logging.info("MQTT conectado y escuchando...")
 
-    logging.info(f"Escuchando en MQTT → {MQTT_TOPIC}")
+    return client
 
+# ---------------------------------------------------------
+# MAIN ASYNC
+# ---------------------------------------------------------
+async def main():
+    logging.info("Creando pool MSSQL...")
+
+    pool = await asyncodbc.create_pool(
+        dsn=MSSQL_CONN_STR,
+        minsize=POOL_SIZE,
+        maxsize=POOL_SIZE,
+        autocommit=True
+    )
+
+    logging.info(f"Pool MSSQL creado con {POOL_SIZE} conexiones.")
+
+    # Lanzar workers SQL
+    for _ in range(POOL_SIZE):
+        loop.create_task(worker_sql(pool))
+
+    # Iniciar MQTT
+    iniciar_mqtt()
+
+    # Mantener el loop vivo
     while True:
-        await asyncio.sleep(3600)
+        await asyncio.sleep(1)
 
+# ---------------------------------------------------------
+# EJECUCIÓN
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(main())
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logging.info("Cerrando addon...")
+    finally:
+        loop.stop()
+        loop.close()
