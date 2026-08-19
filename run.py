@@ -54,10 +54,10 @@ async def trabajador_mssql_secuencial():
     while True:
         try:
             logging.info(f"Abriendo conexión persistente asíncrona con MSSQL ({MSSQL_SERVER})...")
-            async with aioodbc.connect(dsn=CONNECTION_STRING, loop=loop) as conn:
+            
+            # SOLUCIÓN: Pasamos autocommit=True directamente en los parámetros de la conexión asíncrona
+            async with aioodbc.connect(dsn=CONNECTION_STRING, loop=loop, autocommit=True) as conn:
                 async with conn.cursor() as cursor:
-                    # Activamos el autocommit para máxima velocidad transaccional
-                    await conn.setattr(aioodbc.pyodbc.SQL_ATTR_AUTOCOMMIT, aioodbc.pyodbc.SQL_AUTOCOMMIT_ON)
                     logging.info("Tubería persistente asíncrona abierta. Procesando cola en orden cronológico...")
                     
                     while True:
@@ -65,7 +65,7 @@ async def trabajador_mssql_secuencial():
                         query_text = await query_queue.get()
                         
                         try:
-                            # Se ejecuta de forma asíncrona: libera la CPU mientras viaja por la red
+                            # Se ejecuta de forma asíncrona y ultraveloz
                             await cursor.execute(query_text)
                             logging.info("Consulta individual ejecutada con éxito en orden secuencial.")
                         except Exception as db_error:
