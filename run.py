@@ -53,76 +53,63 @@ cursor_mssql = None
 # VARIABLES PARA EL BUFFER SECUENCIAL
 query_buffer = []
 buffer_lock = threading.Lock()
-MAX_BATCH_SIZE = 50          
-MAX_WAIT_TIME = 1.0          
-ultimo_vaciado = time.time()
+INTERVALO_VACIADO = 1.0  # Vacía el buffer estrictamente cada 1.0 segundos
+timer_activo = None
 
 def conectar_mssql_persistente():
-    """Establece y mantiene viva la conexión global con SQL Server."""
+    """Establece la conexión global persistente con SQL Server."""
     global conn_mssql, cursor_mssql
-    while True:
+    try:
+        if conn_mssql is None:
+            logging.info(f"Abriendo conexión persistente con MSSQL ({MSSQL_SERVER})...")
+            conn_mssql = pyodbc.connect(CONNECTION_STRING, timeout=5)
+            cursor_mssql = conn_mssql.cursor()
+            logging.info("Conexión persistente establecida con éxito.")
+    except Exception as e:
+        logging.error(f"Error de conexión a MSSQL: {e}")
+        conn_mssql = None
+        cursor_mssql = None
+
+def programar_proximo_vaciado():
+    """Programa el temporizador para que se ejecute en el futuro de forma no bloqueante."""
+    global timer_activo
+    timer_activo = threading.Timer(INTERVALO_VACIADO, vaciar_buffer_a_mssql)
+    timer_activo.daemon = True
+    timer_activo.start()
+
+def vaciar_buffer_a_mssql():
+    """Función que se ejecuta por evento de reloj para inyectar los datos acumulados."""
+    global query_buffer, conn_mssql, cursor_mssql
+    
+    queries_a_ejecutar = []
+    with buffer_lock:
+        if query_buffer:
+            queries_a_ejecutar = list(query_buffer)
+            query_buffer.clear()
+            
+    if queries_a_ejecutar:
+        script_sql_completo = "\n".join(queries_a_ejecutar)
         try:
             if conn_mssql is None:
-                logging.info(f"Abriendo conexión persistente con MSSQL ({MSSQL_SERVER})...")
-                # Establecemos un timeout corto de red para evitar congelamientos si el servidor cae
-                conn_mssql = pyodbc.connect(CONNECTION_STRING, timeout=5)
-                cursor_mssql = conn_mssql.cursor()
-                logging.info("Conexión persistente establecida con éxito.")
-                break
-        except Exception as e:
-            logging.error(f"No se pudo conectar a MSSQL. Reintentando en 5 segundos... Detalle: {e}")
-            conn_mssql = None
-            time.sleep(5)
-
-def procesar_bloque_secuencial():
-    """Hilo secundario de alta velocidad con conexión abierta."""
-    global query_buffer, ultimo_vaciado, conn_mssql, cursor_mssql
-    
-    # Inicializar la conexión permanente al arrancar el hilo
-    conectar_mssql_persistente()
-    
-    while True:
-        time.sleep(0.05)  
-        
-        queries_a_ejecutar = []
-        ahora = time.time()
-        
-        with buffer_lock:
-            tamano_buffer = len(query_buffer)
-            tiempo_transcurrido = ahora - ultimo_vaciado
-            
-            if tamano_buffer > 0 and (tamano_buffer >= MAX_BATCH_SIZE or tiempo_transcurrido >= MAX_WAIT_TIME):
-                queries_a_ejecutar = list(query_buffer)
-                query_buffer.clear()
-                ultimo_vaciado = ahora
-        
-        if queries_a_ejecutar:
-            script_sql_completo = "\n".join(queries_a_ejecutar)
-            
-            # Bucle de ejecución con autocuración si la conexión persistente muere
-            try:
-                if conn_mssql is None:
-                    conectar_mssql_persistente()
+                conectar_mssql_persistente()
                 
-                # Ejecuta el bloque instantáneamente (la conexión ya está abierta y logueada)
+            if conn_mssql:
                 cursor_mssql.execute(script_sql_completo)
                 conn_mssql.commit()
-                logging.info(f"Bloque inyectado instantáneamente: {len(queries_a_ejecutar)} consultas procesadas.")
-                
-            except (pyodbc.Error, Exception) as db_error:
-                logging.error(f"Fallo en la inyección del bloque. Evaluando estado de la conexión... Detalle: {db_error}")
-                
-                # Forzar el cierre y limpieza para que el próximo ciclo reabra una conexión limpia
-                try: cursor_mssql.close()
-                except: pass
-                try: conn_mssql.close()
-                except: pass
-                
-                conn_mssql = None
-                cursor_mssql = None
-                
-                # Guardamos una copia en el log para diagnóstico humano
-                logging.debug(f"Script del bloque afectado:\n{script_sql_completo}")
+                logging.info(f"Bloque inyectado con éxito: {len(queries_a_ejecutar)} consultas procesadas.")
+        except Exception as db_error:
+            logging.error(f"Fallo en la inyección del bloque: {db_error}")
+            # Limpieza preventiva para forzar reconexión en el próximo segundo
+            try: cursor_mssql.close()
+            except: pass
+            try: conn_mssql.close()
+            except: pass
+            conn_mssql = None
+            cursor_mssql = None
+            logging.debug(f"Script del bloque afectado:\n{script_sql_completo}")
+
+    # Volver a programar el reloj de forma recursiva para el siguiente segundo
+    programar_proximo_vaciado()
 
 def on_message(client, userdata, msg, properties=None):
     try:
@@ -137,9 +124,9 @@ def on_message(client, userdata, msg, properties=None):
     except Exception as e:
         logging.error(f"No se pudo decodificar el payload de MQTT: {e}")
 
-# Iniciar el motor de fondo
-worker_thread = threading.Thread(target=procesar_bloque_secuencial, daemon=True)
-worker_thread.start()
+# Inicializar conexión y arrancar el reloj por eventos antes de activar MQTT
+conectar_mssql_persistente()
+programar_proximo_vaciado()
 
 CLIENT_ID = MQTT_ID
 try:
@@ -153,11 +140,11 @@ if MQTT_USER and MQTT_PWD:
     client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
     logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
 
-logging.info("Iniciando puente asíncrono HÍBRIDO SECUENCIAL con Conexión Persistente...")
+logging.info("Iniciando puente asíncrono POR EVENTOS de alta velocidad...")
 client.connect(MQTT_HOST, MQTT_PORT, 60)
 
 TOPICO_SQL = MQTT_TOPIC
 client.subscribe(TOPICO_SQL, qos=1)
-logging.info(f"Escuchando ráfagas masivas en tiempo real en: {TOPICO_SQL}")
+logging.info(f"Escuchando ráfagas masivas en: {TOPICO_SQL}")
 
 client.loop_forever()
