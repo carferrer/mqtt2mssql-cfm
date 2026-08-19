@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 import paho.mqtt.client as mqtt
-import aioodbc
+import asyncodbc   # ← Migración completa desde aioodbc
 
 CONFIG_PATH = "/data/options.json"
 
@@ -61,7 +61,7 @@ async def inicializar_pool_mssql():
                 pool_mssql.close()
                 await pool_mssql.wait_closed()
 
-            pool_mssql = await aioodbc.create_pool(
+            pool_mssql = await asyncodbc.create_pool(
                 dsn=CONNECTION_STRING,
                 minsize=5,
                 maxsize=10,
@@ -76,7 +76,6 @@ async def inicializar_pool_mssql():
 
 # ---------------- WORKERS ----------------
 async def worker_sql():
-    """Consume consultas de la cola y las ejecuta en paralelo."""
     global pool_mssql
 
     while True:
@@ -111,7 +110,6 @@ def on_message(client, userdata, msg, properties=None):
 async def main():
     await inicializar_pool_mssql()
 
-    # Lanzar 10 workers SQL
     for _ in range(10):
         asyncio.create_task(worker_sql())
 
