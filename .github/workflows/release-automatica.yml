@@ -1,0 +1,49 @@
+name: Crear Release Automática
+
+on:
+  push:
+    branches:
+      - main  # Cambia por tu rama principal si es 'master'
+    paths:
+      - 'config.yaml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Necesario para que el script pueda crear la release
+
+    steps:
+    - name: Registrar repositorio
+      uses: actions/checkout@v4
+
+    - name: Leer versión desde config.yaml
+      id: get_version
+      run: |
+        # Busca la línea que dice version: X.Y.Z y extrae solo el número
+        VERSION=$(grep -E '^version:' config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Verificar si el Tag ya existe
+      id: check_tag
+      run: |
+        git fetch --tags
+        if git rev-parse "v${{ steps.get_version.outputs.version }}" >/dev/null 2>&1; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "La versión v${{ steps.get_version.outputs.version }} ya tiene una release asignada."
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Crear GitHub Release
+      if: steps.check_tag.outputs.exists == 'false'
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ steps.get_version.outputs.version }}
+        name: Release v${{ steps.get_version.outputs.version }}
+        body: |
+          Cambios detectados en config.yaml.
+          Nueva versión automatizada de la aplicación.
+        generate_release_notes: true
+        draft: false
+        prerelease: false
