@@ -40,8 +40,8 @@ jobs:
       uses: softprops/action-gh-release@v2.0.1
       with:
         token: ${{ secrets.PARA_GERERAR_RELEASES }}  # Tu Fine-grained PAT con permiso Read/Write en Contents
-        tag_name: v${{ steps.get_version.outputs.version }}
-        name: Release v${{ steps.get_version.outputs.version }}
+        tag_name: ${{ steps.get_version.outputs.version }}
+        name: Release ${{ steps.get_version.outputs.version }}
         generate_release_notes: true  # Genera el changelog web de forma automática
         draft: false
         prerelease: false
