@@ -1,6 +1,8 @@
 import sys
 import json
 import logging
+import threading
+import time
 import paho.mqtt.client as mqtt
 import pyodbc
 
@@ -47,53 +49,88 @@ CONNECTION_STRING = (
     f"UID={MSSQL_USER};"
     f"PWD={MSSQL_PWD};"
     f"TrustServerCertificate=yes;"
+    f"Pooling=True;"  # Asegura la reutilización interna de conexiones
 )
 
-def ejecutar_sql_puro(query_text):
-    """Ejecuta la query de texto plano recibida y gestiona los errores en el log."""
-    cursor = None
-    conn = None
-    try:
-        # Este registro detallado solo se pintará en pantalla si el usuario activa el nivel DEBUG
-        logging.debug(f"Procesando sentencia SQL entrante:\n{query_text}")
+# VARIABLES PARA EL BUFFER INTERNO (THREAD-SAFE)
+query_buffer = []
+buffer_lock = threading.Lock()
+MAX_BATCH_SIZE = 100        # Número máximo de queries antes de vaciar el buffer
+MAX_WAIT_TIME = 2.0         # Tiempo máximo en segundos para esperar antes de vaciar el buffer
+ultimo_vaciado = time.time() # Almacena la marca de tiempo del último procesamiento
+
+def procesar_lote_sql():
+    """Hilo secundario que monitoriza el buffer y ejecuta las queries agrupadas en un solo lote."""
+    global query_buffer, ultimo_vaciado
+    
+    while True:
+        time.sleep(0.1)  # Revisa las condiciones del buffer 10 veces por segundo (alta velocidad)
         
-        # Abre o reutiliza una conexión del pool
-        conn = pyodbc.connect(CONNECTION_STRING)
-        cursor = conn.cursor()
+        queries_a_ejecutar = []
+        ahora = time.time()
         
-        # Ejecuta la sentencia SQL tal y como viene de Home Assistant
-        cursor.execute(query_text)
-        conn.commit()
-        logging.info("Sentencia ejecutada con éxito en SQL Server.")
+        with buffer_lock:
+            tamano_buffer = len(query_buffer)
+            tiempo_transcurrido = ahora - ultimo_vaciado
+            
+            # Se procesa si se alcanza el tamaño máximo O si se supera el tiempo límite de espera
+            if tamano_buffer > 0 and (tamano_buffer >= MAX_BATCH_SIZE or tiempo_transcurrido >= MAX_WAIT_TIME):
+                queries_a_ejecutar = list(query_buffer)
+                query_buffer.clear()
+                ultimo_vaciado = ahora
         
-    except pyodbc.Error as db_error:
-        # Los errores críticos se reportan siempre de forma estructurada
-        logging.error("Error de sintaxis o ejecución en SQL Server.")
-        logging.error(f"Detalle técnico de MSSQL: {db_error}")
-        logging.error(f"Sentencia fallida originaria:\n{query_text}")
-    except Exception as e:
-        logging.error(f"Error inesperado en la infraestructura del controlador: {e}")
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+        if queries_a_ejecutar:
+            cursor = None
+            conn = None
+            try:
+                logging.debug(f"Iniciando inserción en lote de {len(queries_a_ejecutar)} sentencias...")
+                conn = pyodbc.connect(CONNECTION_STRING)
+                cursor = conn.cursor()
+                
+                # Unificamos todas las queries del lote en una sola transacción masiva
+                cursor.execute("BEGIN TRANSACTION;")
+                for query in queries_a_ejecutar:
+                    cursor.execute(query)
+                cursor.execute("COMMIT;")
+                
+                logging.info(f"Lote masivo ejecutado con éxito: {len(queries_a_ejecutar)} sentencias procesadas.")
+                
+            except pyodbc.Error as db_error:
+                if cursor:
+                    try:
+                        cursor.execute("ROLLBACK;")
+                        logging.warning("Se realizó un ROLLBACK del lote debido a un error de base de datos.")
+                    except:
+                        pass
+                logging.error(f"Fallo al ejecutar lote en SQL Server. Detalle técnico: {db_error}")
+                logging.debug(f"Sentencias del lote fallido: {queries_a_ejecutar}")
+            except Exception as e:
+                logging.error(f"Error inesperado en el hilo del procesador de lotes: {e}")
+            finally:
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.close()
 
 def on_message(client, userdata, msg, properties=None):
-    """Se ejecuta cada vez que llega una sentencia por MQTT."""
+    """Recibe los mensajes de MQTT a la velocidad de la luz y los mete al buffer de memoria RAM."""
     try:
-        # Decodifica el payload MQTT directamente a texto plano (tu consulta SQL)
         query_recibida = msg.payload.decode('utf-8').strip()
-        
         if query_recibida:
-            ejecutar_sql_puro(query_recibida)
+            with buffer_lock:
+                query_buffer.append(query_recibida)
+                
+            logging.debug("Sentencia guardada en el buffer de memoria.")
             
     except Exception as e:
         logging.error(f"No se pudo decodificar el payload entrante de MQTT: {e}")
 
+# Iniciar el hilo de procesamiento de fondo de la base de datos
+worker_thread = threading.Thread(target=procesar_lote_sql, daemon=True)
+worker_thread.start()
+
 # Configuración del cliente MQTT con ID fijo y sesión persistente
 CLIENT_ID = MQTT_ID
-
 try:
     # Usamos la API v2 oficial moderna para eliminar el DeprecationWarning
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID, clean_session=False)
@@ -103,14 +140,12 @@ except AttributeError:
 
 client.on_message = on_message
 
-# ==========================================
-# CONFIGURAR CREDENCIALES MQTT
-# ==========================================
+# Configurar credenciales de autenticación si existen
 if MQTT_USER and MQTT_PWD:
     client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
     logging.info(f"Aplicando credenciales de autenticación para el usuario MQTT: {MQTT_USER}")
 
-logging.info("Iniciando el puente HA-MSSQL con credenciales dinámicas y logging profesional...")
+logging.info("Iniciando puente de alto rendimiento MQTT-MSSQL por lotes...")
 logging.info(f"Conectando al bróker MQTT ({MQTT_HOST}:{MQTT_PORT})...")
 client.connect(MQTT_HOST, MQTT_PORT, 60)
 
@@ -118,6 +153,6 @@ TOPICO_SQL = MQTT_TOPIC
 # qos=1 para asegurar que no se pierda ninguna sentencia si el add-on parpadea
 client.subscribe(TOPICO_SQL, qos=1)
 logging.info(f"Conectando a MSSQL en el servidor de destino: {MSSQL_SERVER}:{MSSQL_PORT}")
-logging.info(f"Add-on completamente operativo. Escuchando consultas SQL puras en: {TOPICO_SQL}")
+logging.info(f"Add-on completamente operativo. Escuchando ráfagas masivas en: {TOPICO_SQL}")
 
 client.loop_forever()
