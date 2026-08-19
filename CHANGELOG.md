@@ -1,3 +1,7 @@
+# Versión 2028.08.26 (2026-08-19)
+
+**Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/2028.08.25...2028.08.26
+
 # Versión 2028.08.25 (2026-08-19)
 
 **Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/2028.08.24...2028.08.25
