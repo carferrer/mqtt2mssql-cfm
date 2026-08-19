@@ -45,57 +45,68 @@ CONNECTION_STRING = (
     f"TrustServerCertificate=yes;"
 )
 
-# Cola asíncrona nativa y bucle de eventos global
+# Cola asíncrona y bucle de eventos global
 query_queue = asyncio.Queue()
 loop = asyncio.get_event_loop()
 
-async def trabajador_mssql_secuencial():
-    """Consume la cola asíncrona una a una garantizando el orden FIFO estricto de llegada."""
+# CONFIGURACIÓN DEL MICRO-BATCH (Optimizado para ráfagas)
+MICRO_BATCH_INTERVAL = 0.2  # Vacía la cola hacia MSSQL cada 200 milisegundos
+MAX_BATCH_SIZE = 50        # Límite de seguridad de consultas por bloque
+
+async def despachador_mssql_micro_batch():
+    """Agrupa las consultas de la cola en micro-lotes secuenciales y los inyecta en un solo viaje de red."""
     while True:
         try:
             logging.info(f"Abriendo conexión persistente asíncrona con MSSQL ({MSSQL_SERVER})...")
-            
-            # SOLUCIÓN: Pasamos autocommit=True directamente en los parámetros de la conexión asíncrona
             async with aioodbc.connect(dsn=CONNECTION_STRING, loop=loop, autocommit=True) as conn:
                 async with conn.cursor() as cursor:
-                    logging.info("Tubería persistente asíncrona abierta. Procesando cola en orden cronológico...")
+                    logging.info("Tubería persistente establecida. Motor Micro-Batch listo.")
                     
                     while True:
-                        # Espera de forma no bloqueante a que entre una query en la cola
-                        query_text = await query_queue.get()
+                        # Esperamos el intervalo de tiempo fijado para acumular ráfagas en la cola
+                        await asyncio.sleep(MICRO_BATCH_INTERVAL)
                         
-                        try:
-                            # Se ejecuta de forma asíncrona y ultraveloz
-                            await cursor.execute(query_text)
-                            logging.info("Consulta individual ejecutada con éxito en orden secuencial.")
-                        except Exception as db_error:
-                            logging.error(f"Fallo de ejecución en SQL Server (Fila saltada): {db_error}")
-                            logging.debug(f"Query afectada:\n{query_text}")
-                        finally:
-                            # Informa a la cola que el elemento ha sido procesado
+                        lote_queries = []
+                        # Extraemos de la cola todos los mensajes acumulados en este instante
+                        while not query_queue.empty() and len(lote_queries) < MAX_BATCH_SIZE:
+                            query = query_queue.get_nowait()
+                            lote_queries.append(query)
                             query_queue.task_done()
+                        
+                        if lote_queries:
+                            # Unimos las consultas con saltos de línea e indicamos SET NOCOUNT ON 
+                            # para eliminar el tráfico de red de retorno que bloquea a MSSQL
+                            script_completo = "SET NOCOUNT ON;\n" + "\n".join(lote_queries)
                             
+                            try:
+                                # Viaja todo el bloque agrupado en un único milisegundo por la red
+                                await cursor.execute(script_completo)
+                                logging.info(f"Micro-lote inyectado con éxito: {len(lote_queries)} consultas procesadas.")
+                            except Exception as db_error:
+                                logging.error(f"Fallo de ejecución en bloque SQL Server: {db_error}")
+                                logging.debug(f"Script del bloque afectado:\n{script_completo}")
+                                
         except Exception as e:
-            logging.error(f"Error en la conexión persistente asíncrona. Reconectando en 5s... Detalle: {e}")
+            logging.error(f"Error en la conexión persistente. Reconectando en 5s... Detalle: {e}")
             await asyncio.sleep(5)
 
 def on_message(client, userdata, msg, properties=None):
-    """Recibe el mensaje MQTT de forma instantánea y lo mete al final de la cola asíncrona."""
+    """Recibe los mensajes de MQTT instantáneamente y los mete a la cola en microsegundos."""
     try:
         query_recibida = msg.payload.decode('utf-8').strip()
         if query_recibida:
             if not query_recibida.endswith(';'):
                 query_recibida += ';'
             
-            # Operación en memoria RAM instantánea: mete la query respetando la fila india
+            # Coloca la consulta en la cola respetando la fila india
             loop.call_soon_threadsafe(query_queue.put_nowait, query_recibida)
-            logging.debug("Consulta guardada en la cola secuencial asíncrona.")
+            logging.debug("Consulta encolada en el buffer asíncrono.")
     except Exception as e:
         logging.error(f"Error al procesar el mensaje MQTT: {e}")
 
 async def main():
-    # 1. Arrancar el hilo de fondo secuencial asíncrono
-    asyncio.create_task(trabajador_mssql_secuencial())
+    # 1. Arrancar el consumidor de micro-lotes de fondo
+    asyncio.create_task(despachador_mssql_micro_batch())
 
     # 2. Configurar cliente MQTT integrado
     CLIENT_ID = MQTT_ID
@@ -111,11 +122,10 @@ async def main():
     
     TOPICO_SQL = MQTT_TOPIC
     client.subscribe(TOPICO_SQL, qos=1)
-    logging.info(f"Escuchando ráfagas asíncronas SECUENCIALES en: {TOPICO_SQL}")
+    logging.info(f"Escuchando ráfagas asíncronas en: {TOPICO_SQL}")
 
     client.loop_start()
 
-    # Mantener el loop vivo de forma eficiente
     while True:
         await asyncio.sleep(3600)
 
