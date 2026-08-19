@@ -3,11 +3,11 @@ import json
 import logging
 import asyncio
 import paho.mqtt.client as mqtt
-import aioodbc  # El driver asíncrono para manejar el Pool
+import aioodbc
 
-# Ruta oficial donde Home Assistant guarda las opciones de la interfaz del Add-on
 CONFIG_PATH = "/data/options.json"
 
+# ---------------- CONFIG ----------------
 try:
     with open(CONFIG_PATH, "r") as f:
         config_data = json.load(f)
@@ -15,10 +15,8 @@ except Exception as e:
     print(f"[CRITICAL] No se pudo leer la configuración del Add-on: {e}", file=sys.stderr)
     sys.exit(1)
 
-# Extraer el nivel de log configurado por el usuario (por defecto INFO)
 LOG_LEVEL = config_data.get("log_level", "INFO").upper()
 
-# Configurar el formato profesional de los logs para Home Assistant
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -26,7 +24,6 @@ logging.basicConfig(
     stream=sys.stdout
 )
 
-# Extraer las credenciales dinámicas de la configuración
 MSSQL_SERVER = config_data.get("mssql_server", "mssqlserver")
 MSSQL_PORT = config_data.get("mssql_port", 1433)
 MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
@@ -49,91 +46,92 @@ CONNECTION_STRING = (
     f"TrustServerCertificate=yes;"
 )
 
-# Variables globales para el bucle y el Pool asíncrono
+# ---------------- GLOBALS ----------------
+queue = asyncio.Queue()
 pool_mssql = None
-loop = asyncio.get_event_loop()
 
-# LA CLAVE DEL ORDEN: Un semáforo asíncrono que garantiza que las consultas 
-# se lancen al pool estrictamente en su orden de llegada por MQTT
-semaphore = asyncio.Semaphore(1)
-
+# ---------------- POOL ----------------
 async def inicializar_pool_mssql():
-    """Crea un pool dinámico de hasta 10 conexiones simultáneas abiertas (Igual que Node-RED)."""
     global pool_mssql
     while True:
         try:
-            logging.info(f"Abriendo Pool de 10 conexiones persistentes con MSSQL ({MSSQL_SERVER})...")
-            # SOLUCIÓN: Eliminamos 'loop=loop' para compatibilidad con el motor de Python actual
+            logging.info("Creando pool MSSQL (10 conexiones)...")
+
+            if pool_mssql:
+                pool_mssql.close()
+                await pool_mssql.wait_closed()
+
             pool_mssql = await aioodbc.create_pool(
-                dsn=CONNECTION_STRING, 
-                minsize=5, 
-                maxmaxsize=10, 
+                dsn=CONNECTION_STRING,
+                minsize=5,
+                maxsize=10,
                 autocommit=True
             )
-            logging.info("Pool dinámico establecido. 10 canales listos para ráfagas.")
-            break
+
+            logging.info("Pool MSSQL listo.")
+            return
         except Exception as e:
-            logging.error(f"Error al levantar el Pool de conexiones: {e}. Reintentando en 5s...")
+            logging.error(f"Error creando pool: {e}. Reintentando en 5s...")
             await asyncio.sleep(5)
 
-async def ejecutar_sql_en_pool(query_text):
-    """Inyecta la consulta usando una de las 10 conexiones libres del pool de forma asíncrona."""
+# ---------------- WORKERS ----------------
+async def worker_sql():
+    """Consume consultas de la cola y las ejecuta en paralelo."""
     global pool_mssql
-    
-    # El semáforo asegura que las consultas entren al pool en orden FIFO estricto
-    async with semaphore:
+
+    while True:
+        query_text = await queue.get()
         try:
-            if pool_mssql is None:
-                await inicializar_pool_mssql()
-                
-            # Toma instantáneamente una de las 10 sesiones abiertas en microsegundos
             async with pool_mssql.acquire() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute(query_text)
-                    logging.info("Consulta inyectada con éxito a través del Pool multi-sesión.")
-        except Exception as db_error:
-            logging.error(f"Fallo de ejecución individual en el Pool: {db_error}")
-            logging.debug(f"Query afectada:\n{query_text}")
+                    logging.info("Consulta ejecutada correctamente.")
+        except Exception as e:
+            logging.error(f"Error ejecutando SQL: {e}")
+            logging.debug(f"Query:\n{query_text}")
+        finally:
+            queue.task_done()
 
+# ---------------- MQTT ----------------
 def on_message(client, userdata, msg, properties=None):
-    """Recibe los mensajes de MQTT y los despacha al loop asíncrono sin bloquear la red."""
     try:
-        query_recibida = msg.payload.decode('utf-8').strip()
-        if query_recibida:
-            if not query_recibida.endswith(';'):
-                query_recibida += ';'
-            
-            # Delegamos la tarea al Pool respetando la marca de tiempo de llegada
-            asyncio.run_coroutine_threadsafe(ejecutar_sql_en_pool(query_recibida), loop)
-            logging.debug("Consulta enviada al administrador del Pool.")
-    except Exception as e:
-        logging.error(f"Error en recepción MQTT: {e}")
+        query = msg.payload.decode("utf-8").strip()
+        if not query:
+            return
 
+        if not query.endswith(";"):
+            query += ";"
+
+        asyncio.run_coroutine_threadsafe(queue.put(query), asyncio.get_event_loop())
+        logging.debug("Consulta añadida a la cola FIFO.")
+    except Exception as e:
+        logging.error(f"Error procesando mensaje MQTT: {e}")
+
+# ---------------- MAIN ----------------
 async def main():
-    # 1. Levantar las 10 sesiones persistentes de base de datos
     await inicializar_pool_mssql()
 
-    # 2. Conectar el cliente MQTT
-    CLIENT_ID = MQTT_ID
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID, clean_session=False)
+    # Lanzar 10 workers SQL
+    for _ in range(10):
+        asyncio.create_task(worker_sql())
+
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=MQTT_ID, clean_session=True)
     client.on_message = on_message
 
     if MQTT_USER and MQTT_PWD:
-        client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
-        logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
+        client.username_pw_set(MQTT_USER, MQTT_PWD)
 
-    logging.info("Conectando al bróker MQTT...")
+    logging.info("Conectando a MQTT...")
     client.connect(MQTT_HOST, MQTT_PORT, 60)
-    
-    TOPICO_SQL = MQTT_TOPIC
-    client.subscribe(TOPICO_SQL, qos=1)
-    logging.info(f"Escuchando ráfagas concurrentes en: {TOPICO_SQL}")
-
+    client.subscribe(MQTT_TOPIC, qos=1)
     client.loop_start()
 
-    # Mantener el bucle asíncrono principal activo
+    logging.info(f"Escuchando en MQTT → {MQTT_TOPIC}")
+
     while True:
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.run_until_complete(main())
