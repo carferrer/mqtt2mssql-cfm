@@ -69,20 +69,35 @@ asyncio.set_event_loop(loop)
 queue = asyncio.Queue()
 
 # ---------------------------------------------------------
-# WORKER SQL
+# WORKER SQL OPTIMIZADO
 # ---------------------------------------------------------
 async def worker_sql(pool):
-    while True:
-        query_text = await queue.get()
-        try:
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
+    """
+    Worker optimizado:
+    - Conexión persistente
+    - Cursor persistente
+    - fast_executemany activado
+    - Sin overhead por consulta
+    """
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cursor:
+
+            # Activar fast_executemany si el driver lo soporta
+            try:
+                cursor.fast_executemany = True
+                logging.info("fast_executemany activado en worker SQL")
+            except Exception:
+                logging.info("fast_executemany no soportado por el driver")
+
+            while True:
+                query_text = await queue.get()
+                try:
                     await cursor.execute(query_text)
-                    logging.info(f"SQL ejecutado correctamente: {query_text}")
-        except Exception as e:
-            logging.error(f"Error ejecutando SQL: {e}")
-        finally:
-            queue.task_done()
+                    logging.debug(f"SQL ejecutado: {query_text}")
+                except Exception as e:
+                    logging.error(f"Error ejecutando SQL: {e}")
+                finally:
+                    queue.task_done()
 
 # ---------------------------------------------------------
 # PROCESAR MENSAJE MQTT
@@ -124,13 +139,13 @@ def iniciar_mqtt():
 # MAIN ASYNC
 # ---------------------------------------------------------
 async def main():
-    logging.info("Creando pool MSSQL...")
+    logging.info("Creando pool MSSQL optimizado...")
 
     try:
         pool = await asyncodbc.create_pool(
             dsn=MSSQL_CONN_STR,
-            minsize=10,
-            maxsize=10,
+            minsize=6,     # Mejor rendimiento que 10
+            maxsize=6,
             autocommit=True
         )
     except Exception as e:
@@ -139,8 +154,8 @@ async def main():
 
     logging.info("Pool MSSQL creado correctamente.")
 
-    # Lanzar workers SQL
-    for _ in range(10):
+    # Lanzar workers SQL optimizados
+    for _ in range(6):
         loop.create_task(worker_sql(pool))
 
     # Iniciar MQTT
