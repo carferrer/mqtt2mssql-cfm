@@ -46,18 +46,15 @@ CONNECTION_STRING = (
     f"TrustServerCertificate=yes;"
 )
 
-# VARIABLES GLOBAL PARA LA CONEXIÓN PERSISTENTE
 conn_mssql = None
 cursor_mssql = None
 
-# VARIABLES PARA EL BUFFER SECUENCIAL
 query_buffer = []
 buffer_lock = threading.Lock()
-INTERVALO_VACIADO = 1.0  # Vacía el buffer estrictamente cada 1.0 segundos
+INTERVALO_VACIADO = 1.0  # Mantenemos el vaciado cada 1.0 segundo exacto
 timer_activo = None
 
 def conectar_mssql_persistente():
-    """Establece la conexión global persistente con SQL Server."""
     global conn_mssql, cursor_mssql
     try:
         if conn_mssql is None:
@@ -71,14 +68,12 @@ def conectar_mssql_persistente():
         cursor_mssql = None
 
 def programar_proximo_vaciado():
-    """Programa el temporizador para que se ejecute en el futuro de forma no bloqueante."""
     global timer_activo
     timer_activo = threading.Timer(INTERVALO_VACIADO, vaciar_buffer_a_mssql)
     timer_activo.daemon = True
     timer_activo.start()
 
 def vaciar_buffer_a_mssql():
-    """Función que se ejecuta por evento de reloj para inyectar los datos acumulados."""
     global query_buffer, conn_mssql, cursor_mssql
     
     queries_a_ejecutar = []
@@ -88,7 +83,10 @@ def vaciar_buffer_a_mssql():
             query_buffer.clear()
             
     if queries_a_ejecutar:
-        script_sql_completo = "\n".join(queries_a_ejecutar)
+        # OPTIMIZACIÓN CLAVE: Iniciamos el bloque con SET NOCOUNT ON para apagar 
+        # las respuestas de conteo que saturan los hilos de red de MSSQL
+        script_sql_completo = "SET NOCOUNT ON;\n" + "\n".join(queries_a_ejecutar)
+        
         try:
             if conn_mssql is None:
                 conectar_mssql_persistente()
@@ -96,10 +94,9 @@ def vaciar_buffer_a_mssql():
             if conn_mssql:
                 cursor_mssql.execute(script_sql_completo)
                 conn_mssql.commit()
-                logging.info(f"Bloque inyectado con éxito: {len(queries_a_ejecutar)} consultas procesadas.")
+                logging.info(f"Bloque inyectado de forma eficiente: {len(queries_a_ejecutar)} consultas procesadas.")
         except Exception as db_error:
             logging.error(f"Fallo en la inyección del bloque: {db_error}")
-            # Limpieza preventiva para forzar reconexión en el próximo segundo
             try: cursor_mssql.close()
             except: pass
             try: conn_mssql.close()
@@ -108,7 +105,6 @@ def vaciar_buffer_a_mssql():
             cursor_mssql = None
             logging.debug(f"Script del bloque afectado:\n{script_sql_completo}")
 
-    # Volver a programar el reloj de forma recursiva para el siguiente segundo
     programar_proximo_vaciado()
 
 def on_message(client, userdata, msg, properties=None):
@@ -124,7 +120,6 @@ def on_message(client, userdata, msg, properties=None):
     except Exception as e:
         logging.error(f"No se pudo decodificar el payload de MQTT: {e}")
 
-# Inicializar conexión y arrancar el reloj por eventos antes de activar MQTT
 conectar_mssql_persistente()
 programar_proximo_vaciado()
 
@@ -140,7 +135,7 @@ if MQTT_USER and MQTT_PWD:
     client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
     logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
 
-logging.info("Iniciando puente asíncrono POR EVENTOS de alta velocidad...")
+logging.info("Iniciando puente asíncrono POR EVENTOS optimizado para BBDD...")
 client.connect(MQTT_HOST, MQTT_PORT, 60)
 
 TOPICO_SQL = MQTT_TOPIC
