@@ -2,7 +2,6 @@ import sys
 import json
 import logging
 import threading
-import time
 import paho.mqtt.client as mqtt
 import pyodbc
 
@@ -46,82 +45,68 @@ CONNECTION_STRING = (
     f"TrustServerCertificate=yes;"
 )
 
+# OBJETO DE BLOQUEO PARA EVITAR QUE LOS EVENTOS MQTT PIBEN EL CURSOR
+db_lock = threading.Lock()
 conn_mssql = None
 cursor_mssql = None
 
-query_buffer = []
-buffer_lock = threading.Lock()
-INTERVALO_VACIADO = 1.0  # Mantenemos el vaciado cada 1.0 segundo exacto
-timer_activo = None
-
 def conectar_mssql_persistente():
+    """Establece la conexión única global al arrancar."""
     global conn_mssql, cursor_mssql
     try:
         if conn_mssql is None:
             logging.info(f"Abriendo conexión persistente con MSSQL ({MSSQL_SERVER})...")
             conn_mssql = pyodbc.connect(CONNECTION_STRING, timeout=5)
+            # Desactivamos el autocommit para que pyodbc gestione las transacciones individuales rápido
+            conn_mssql.autocommit = True
             cursor_mssql = conn_mssql.cursor()
-            logging.info("Conexión persistente establecida con éxito.")
+            logging.info("Conexión persistente establecida y lista para ráfagas.")
     except Exception as e:
-        logging.error(f"Error de conexión a MSSQL: {e}")
+        logging.error(f"Error crítico de conexión inicial a MSSQL: {e}")
         conn_mssql = None
         cursor_mssql = None
 
-def programar_proximo_vaciado():
-    global timer_activo
-    timer_activo = threading.Timer(INTERVALO_VACIADO, vaciar_buffer_a_mssql)
-    timer_activo.daemon = True
-    timer_activo.start()
+def on_message(client, userdata, msg, properties=None):
+    """Procesa cada mensaje de forma individual al instante a través de la tubería abierta."""
+    global conn_mssql, cursor_mssql
+    try:
+        query_recibida = msg.payload.decode('utf-8').strip()
+        if not query_recibida:
+            return
 
-def vaciar_buffer_a_mssql():
-    global query_buffer, conn_mssql, cursor_mssql
-    
-    queries_a_ejecutar = []
-    with buffer_lock:
-        if query_buffer:
-            queries_a_ejecutar = list(query_buffer)
-            query_buffer.clear()
-            
-    if queries_a_ejecutar:
-        # OPTIMIZACIÓN CLAVE: Iniciamos el bloque con SET NOCOUNT ON para apagar 
-        # las respuestas de conteo que saturan los hilos de red de MSSQL
-        script_sql_completo = "SET NOCOUNT ON;\n" + "\n".join(queries_a_ejecutar)
-        
-        try:
+        # Aseguramos el formato
+        if not query_recibida.endswith(';'):
+            query_recibida += ';'
+
+        # Sincronizamos el acceso al cursor único abierto para que las queries entren en fila india perfecta
+        with db_lock:
+            # Si por algún motivo la conexión se cayó, la reabrimos en el acto
             if conn_mssql is None:
                 conectar_mssql_persistente()
-                
+            
             if conn_mssql:
-                cursor_mssql.execute(script_sql_completo)
-                conn_mssql.commit()
-                logging.info(f"Bloque inyectado de forma eficiente: {len(queries_a_ejecutar)} consultas procesadas.")
-        except Exception as db_error:
-            logging.error(f"Fallo en la inyección del bloque: {db_error}")
+                cursor_mssql.execute(query_recibida)
+                logging.info("Consulta ejecutada con éxito a través de la tubería abierta.")
+
+    except pyodbc.Error as db_error:
+        logging.error(f"Fallo de ejecución en SQL Server (Fila saltada): {db_error}")
+        logging.debug(f"Query afectada:\n{query_recibida}")
+        
+        # Si el error es de desconexión, limpiamos las variables para forzar reconexión en el próximo mensaje
+        if "08S01" in str(db_error) or "link failure" in str(db_error).lower():
+            logging.warning("Detectada caída de red con MSSQL. Forzando reinicio de tubería...")
             try: cursor_mssql.close()
             except: pass
             try: conn_mssql.close()
             except: pass
             conn_mssql = None
             cursor_mssql = None
-            logging.debug(f"Script del bloque afectado:\n{script_sql_completo}")
 
-    programar_proximo_vaciado()
-
-def on_message(client, userdata, msg, properties=None):
-    try:
-        query_recibida = msg.payload.decode('utf-8').strip()
-        if query_recibida:
-            if not query_recibida.endswith(';'):
-                query_recibida += ';'
-                
-            with buffer_lock:
-                query_buffer.append(query_recibida)
-            logging.debug("Sentencia guardada en el buffer ordenado.")
     except Exception as e:
-        logging.error(f"No se pudo decodificar el payload de MQTT: {e}")
+        logging.error(f"Error inesperado al procesar el mensaje MQTT: {e}")
 
+# Arrancar la conexión persistente antes de encender MQTT
 conectar_mssql_persistente()
-programar_proximo_vaciado()
 
 CLIENT_ID = MQTT_ID
 try:
@@ -135,11 +120,11 @@ if MQTT_USER and MQTT_PWD:
     client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
     logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
 
-logging.info("Iniciando puente asíncrono POR EVENTOS optimizado para BBDD...")
+logging.info("Iniciando puente asíncrono DIRECTO de alta velocidad...")
 client.connect(MQTT_HOST, MQTT_PORT, 60)
 
 TOPICO_SQL = MQTT_TOPIC
 client.subscribe(TOPICO_SQL, qos=1)
-logging.info(f"Escuchando ráfagas masivas en: {TOPICO_SQL}")
+logging.info(f"Escuchando ráfagas individuales en tiempo real en: {TOPICO_SQL}")
 
 client.loop_forever()
