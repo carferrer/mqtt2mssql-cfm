@@ -17,17 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade APT to support Signed-By directive
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
-
-# Install ODBC Driver 18 for SQL Server
-RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
+# Instalar ODBC Driver 18 para SQL Server
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
     && curl https://packages.microsoft.com/config/debian/12/prod.list \
         -o /etc/apt/sources.list.d/mssql-release.list \
-    && sed -i 's/^/Signed-By=\/etc\/apt\/keyrings\/microsoft.gpg /' /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y msodbcsql18
-    
+
 # Python libs
 RUN pip3 install --no-cache-dir --upgrade \
     paho-mqtt==2.1.0 \
