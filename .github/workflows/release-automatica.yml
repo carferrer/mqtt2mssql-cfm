@@ -3,7 +3,7 @@ name: Crear Release Automática
 on:
   push:
     branches:
-      - main  # Cambia por tu rama principal si es 'master'
+      - main  # Cambia por tu rama principal si usas 'master'
     paths:
       - 'config.yaml'
 
@@ -11,16 +11,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Necesario para que el script pueda crear la release
+      contents: write
 
     steps:
     - name: Registrar repositorio
-      uses: actions/checkout@v4
+      uses: actions/checkout@v4.2.2
 
     - name: Leer versión desde config.yaml
       id: get_version
       run: |
-        # Busca la línea que dice version: X.Y.Z y extrae solo el número
+        # Busca la línea 'version:' en config.yaml y limpia las comillas
         VERSION=$(grep -E '^version:' config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'")
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
@@ -37,14 +37,11 @@ jobs:
 
     - name: Crear GitHub Release
       if: steps.check_tag.outputs.exists == 'false'
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v2.0.1
       with:
-        token: ${{ secrets.PARA_GERERAR_RELEASES }}
+        token: ${{ secrets.PARA_GERERAR_RELEASES }}  # Tu Fine-grained PAT con permiso Read/Write en Contents
         tag_name: v${{ steps.get_version.outputs.version }}
         name: Release v${{ steps.get_version.outputs.version }}
-        body: |
-          Cambios detectados en config.yaml.
-          Nueva versión automatizada de la aplicación.
-        generate_release_notes: true
+        generate_release_notes: true  # Genera el changelog web de forma automática
         draft: false
         prerelease: false
