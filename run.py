@@ -1,11 +1,9 @@
 import sys
 import json
 import logging
-import queue
-import threading
-import time
+import asyncio
 import paho.mqtt.client as mqtt
-import pymssql
+import aioodbc  # El driver asíncrono para manejar el Pool
 
 # Ruta oficial donde Home Assistant guarda las opciones de la interfaz del Add-on
 CONFIG_PATH = "/data/options.json"
@@ -42,121 +40,100 @@ MQTT_PWD = config_data.get("mqtt_password", "mqttpwd")
 MQTT_ID = config_data.get("mqtt_id", "mqttid")
 MQTT_TOPIC = config_data.get("mqtt_topic", "mqtt2mssqltopic")
 
-# Cola secuencial FIFO en memoria RAM para asegurar el orden estricto de llegada
-query_queue = queue.Queue()
+CONNECTION_STRING = (
+    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+    f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
+    f"DATABASE={MSSQL_DB};"
+    f"UID={MSSQL_USER};"
+    f"PWD={MSSQL_PWD};"
+    f"TrustServerCertificate=yes;"
+)
 
-# Frecuencia de vaciado a 100ms para fulminar la latencia de Node-RED
-MICRO_BATCH_INTERVAL = 0.1  
-MAX_BATCH_SIZE = 100
+# Variables globales para el bucle y el Pool asíncrono
+pool_mssql = None
+loop = asyncio.get_event_loop()
 
-conn_mssql = None
+# LA CLAVE DEL ORDEN: Un semáforo asíncrono que garantiza que las consultas 
+# se lancen al pool estrictamente en su orden de llegada por MQTT
+semaphore = asyncio.Semaphore(1)
 
-def conectar_mssql_tds():
-    """Establece una conexión directa por socket TCP/IP con protocolo TDS."""
-    global conn_mssql
+async def inicializar_pool_mssql():
+    """Crea un pool dinámico de hasta 10 conexiones simultáneas abiertas (Igual que Node-RED)."""
+    global pool_mssql
     while True:
         try:
-            if conn_mssql is None:
-                logging.info(f"Abriendo socket TDS directo con MSSQL ({MSSQL_SERVER})...")
-                conn_mssql = pymssql.connect(
-                    server=MSSQL_SERVER,
-                    port=int(MSSQL_PORT),
-                    user=MSSQL_USER,
-                    password=MSSQL_PWD,
-                    database=MSSQL_DB,
-                    autocommit=False, # Controlamos la red mediante confirmación diferida de ráfagas
-                    login_timeout=5
-                )
-                logging.info("Tubería TDS de alta velocidad establecida.")
-                break
+            logging.info(f"Abriendo Pool de 10 conexiones persistentes con MSSQL ({MSSQL_SERVER})...")
+            pool_mssql = await aioodbc.create_pool(
+                dsn=CONNECTION_STRING, 
+                minsize=5, 
+                maxsize=10, # <-- Abre hasta 10 sesiones en tu MSSQL
+                loop=loop,
+                autocommit=True # Inyección directa ultrarrápida
+            )
+            logging.info("Pool dinámico establecido. 10 canales listos para ráfagas.")
+            break
         except Exception as e:
-            logging.error(f"Fallo en socket TDS. Reintentando en 5s... Detalle: {e}")
-            conn_mssql = None
-            time.sleep(5)
+            logging.error(f"Error al levantar el Pool de conexiones: {e}. Reintentando en 5s...")
+            await asyncio.sleep(5)
 
-def despachador_mssql_loop():
-    """Hilo de fondo que procesa los micro-lotes encapsulados en bloques TRY/CATCH nativos."""
-    global conn_mssql
-    conectar_mssql_tds()
+async def ejecutar_sql_en_pool(query_text):
+    """Inyecta la consulta usando una de las 10 conexiones libres del pool de forma asíncrona."""
+    global pool_mssql
     
-    while True:
-        time.sleep(MICRO_BATCH_INTERVAL)
-        
-        lote_queries = []
-        while not query_queue.empty() and len(lote_queries) < MAX_BATCH_SIZE:
-            try:
-                query = query_queue.get_nowait()
-                lote_queries.append(query)
-            except queue.Empty:
-                break
-        
-        if lote_queries:
-            # Encapsulado inteligente: Protegemos cada query en un bloque TRY/CATCH nativo de SQL Server.
-            # Si una consulta falla, avisa en el log pero permite que las demás del bloque se guarden con éxito.
-            queries_protegidas = [
-                f"BEGIN TRY {q} END TRY BEGIN CATCH PRINT 'Error en sentencia: ' + ERROR_MESSAGE(); END CATCH" 
-                for q in lote_queries
-            ]
-            script_completo = "SET NOCOUNT ON;\n" + "\n".join(queries_protegidas)
-            
-            try:
-                if conn_mssql is None:
-                    conectar_mssql_tds()
+    # El semáforo asegura que las consultas entren al pool en orden FIFO estricto
+    async with semaphore:
+        try:
+            if pool_mssql is None:
+                await inicializar_pool_mssql()
                 
-                with conn_mssql.cursor() as cursor:
-                    cursor.execute(script_completo)
-                    conn_mssql.commit()
-                
-                logging.info(f"Ráfaga TDS procesada con éxito: {len(lote_queries)} consultas evaluadas.")
-                
-                for _ in lote_queries:
-                    query_queue.task_done()
-                    
-            except Exception as db_error:
-                logging.error(f"Error de red crítico en el socket TDS: {db_error}")
-                logging.debug(f"Script del bloque afectado:\n{script_completo}")
-                
-                try: conn_mssql.rollback()
-                except: pass
-                conn_mssql = None
-                
-                for _ in lote_queries:
-                    query_queue.task_done()
+            # Toma instantáneamente una de las 10 sesiones abiertas en microsegundos
+            async with pool_mssql.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute(query_text)
+                    logging.info("Consulta inyectada con éxito a través del Pool multi-sesión.")
+        except Exception as db_error:
+            logging.error(f"Fallo de ejecución individual en el Pool: {db_error}")
+            logging.debug(f"Query afectada:\n{query_text}")
 
 def on_message(client, userdata, msg, properties=None):
-    """Captura los mensajes de MQTT a la velocidad de la luz y mantiene la fila india FIFO."""
+    """Recibe los mensajes de MQTT y los despacha al loop asíncrono sin bloquear la red."""
     try:
         query_recibida = msg.payload.decode('utf-8').strip()
         if query_recibida:
             if not query_recibida.endswith(';'):
                 query_recibida += ';'
             
-            query_queue.put(query_recibida)
-            logging.debug("Consulta guardada en el buffer FIFO.")
+            # Delegamos la tarea al Pool respetando la marca de tiempo de llegada
+            asyncio.run_coroutine_threadsafe(ejecutar_sql_en_pool(query_recibida), loop)
+            logging.debug("Consulta enviada al administrador del Pool.")
     except Exception as e:
-        logging.error(f"Error al procesar mensaje MQTT: {e}")
+        logging.error(f"Error en recepción MQTT: {e}")
 
-# Iniciar el despachador secuencial de fondo
-worker_thread = threading.Thread(target=despachador_mssql_loop, daemon=True)
-worker_thread.start()
+async def main():
+    # 1. Levantar las 10 sesiones persistentes de base de datos
+    await inicializar_pool_mssql()
 
-CLIENT_ID = MQTT_ID
-try:
+    # 2. Conectar el cliente MQTT
+    CLIENT_ID = MQTT_ID
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID, clean_session=False)
-except AttributeError:
-    client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)
+    client.on_message = on_message
 
-client.on_message = on_message
+    if MQTT_USER and MQTT_PWD:
+        client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
+        logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
 
-if MQTT_USER and MQTT_PWD:
-    client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
-    logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
+    logging.info("Conectando al bróker MQTT...")
+    client.connect(MQTT_HOST, MQTT_PORT, 60)
+    
+    TOPICO_SQL = MQTT_TOPIC
+    client.subscribe(TOPICO_SQL, qos=1)
+    logging.info(f"Escuchando ráfagas concurrentes en: {TOPICO_SQL}")
 
-logging.info("Iniciando puente de rendimiento extremo por socket nativo TDS (Cero ODBC)...")
-client.connect(MQTT_HOST, MQTT_PORT, 60)
+    client.loop_start()
 
-TOPICO_SQL = MQTT_TOPIC
-client.subscribe(TOPICO_SQL, qos=1)
-logging.info(f"Escuchando ráfagas ordenadas tolerantes a fallos en: {TOPICO_SQL}")
+    # Mantener el bucle asíncrono principal activo
+    while True:
+        await asyncio.sleep(3600)
 
-client.loop_forever()
+if __name__ == "__main__":
+    loop.run_until_complete(main())
