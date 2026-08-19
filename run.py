@@ -72,17 +72,9 @@ queue = asyncio.Queue()
 # WORKER SQL OPTIMIZADO
 # ---------------------------------------------------------
 async def worker_sql(pool):
-    """
-    Worker optimizado:
-    - Conexión persistente
-    - Cursor persistente
-    - fast_executemany activado
-    - Sin overhead por consulta
-    """
     async with pool.acquire() as conn:
         async with conn.cursor() as cursor:
 
-            # Activar fast_executemany si el driver lo soporta
             try:
                 cursor.fast_executemany = True
                 logging.info("fast_executemany activado en worker SQL")
@@ -91,11 +83,16 @@ async def worker_sql(pool):
 
             while True:
                 query_text = await queue.get()
+
                 try:
                     await cursor.execute(query_text)
-                    logging.debug(f"SQL ejecutado: {query_text}")
+                    logging.debug(f"SQL ejecutado correctamente: {query_text}")
+
                 except Exception as e:
-                    logging.error(f"Error ejecutando SQL: {e}")
+                    logging.error(
+                        f"Error ejecutando SQL: {e} | Comando: {query_text}"
+                    )
+
                 finally:
                     queue.task_done()
 
