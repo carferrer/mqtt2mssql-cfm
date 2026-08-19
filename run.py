@@ -69,46 +69,83 @@ asyncio.set_event_loop(loop)
 queue = asyncio.Queue()
 
 # ---------------------------------------------------------
-# WORKER SQL OPTIMIZADO
+# WORKER SQL CON RECONEXIÓN AUTOMÁTICA
 # ---------------------------------------------------------
 async def worker_sql(pool):
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cursor:
+    conn = None
+    cursor = None
 
-            try:
-                cursor.fast_executemany = True
-                logging.info("fast_executemany activado en worker SQL")
-            except Exception:
-                logging.info("fast_executemany no soportado por el driver")
-
-            while True:
-                query_text = await queue.get()
-
+    while True:
+        try:
+            # Si no hay conexión, crear una nueva
+            if conn is None:
                 try:
-                    await cursor.execute(query_text)
-                    logging.debug(f"SQL ejecutado correctamente: {query_text}")
+                    conn = await pool.acquire()
+                    cursor = await conn.cursor()
+
+                    try:
+                        cursor.fast_executemany = True
+                        logging.info("fast_executemany activado en worker SQL")
+                    except Exception:
+                        logging.info("fast_executemany no soportado por el driver")
+
+                    logging.info("Conexión MSSQL establecida en worker")
 
                 except Exception as e:
-                    logging.error(
-                        f"Error ejecutando SQL: {e} | Comando: {query_text}"
-                    )
+                    logging.error(f"Error creando conexión MSSQL: {e}")
+                    conn = None
+                    cursor = None
+                    await asyncio.sleep(1)
+                    continue
 
-                finally:
-                    queue.task_done()
+            # Obtener comando FIFO
+            query_text = await queue.get()
+
+            try:
+                await cursor.execute(query_text)
+                logging.debug(f"SQL ejecutado correctamente: {query_text}")
+
+            except Exception as e:
+                logging.error(f"Error ejecutando SQL: {e} | Comando: {query_text}")
+
+                # Cerrar cursor y conexión para forzar reconexión
+                try:
+                    await cursor.close()
+                except:
+                    pass
+
+                try:
+                    await conn.close()
+                except:
+                    pass
+
+                logging.warning("Conexión MSSQL perdida. Intentando reconectar...")
+
+                conn = None
+                cursor = None
+
+            finally:
+                queue.task_done()
+
+        except Exception as fatal:
+            logging.error(f"Error fatal en worker: {fatal}")
+            conn = None
+            cursor = None
+            await asyncio.sleep(1)
 
 # ---------------------------------------------------------
 # PROCESAR MENSAJE MQTT
 # ---------------------------------------------------------
 def on_message(client, userdata, msg):
     try:
-        query = msg.payload.decode("utf-8").strip()
+        query = msg.payload.decode("utf-8")
 
-        if not query.endswith(";"):
+        if query[-1] != ";":
             query += ";"
 
         logging.info(f"MQTT recibido → {query}")
 
-        asyncio.run_coroutine_threadsafe(queue.put(query), loop)
+        loop.call_soon_threadsafe(queue.put_nowait, query)
 
     except Exception as e:
         logging.error(f"Error procesando mensaje MQTT: {e}")
@@ -125,7 +162,7 @@ def iniciar_mqtt():
     client.on_message = on_message
 
     client.connect(MQTT_HOST, MQTT_PORT, 60)
-    client.subscribe(MQTT_TOPIC)
+    client.subscribe(MQTT_TOPIC, qos=0)
 
     client.loop_start()
     logging.info("MQTT conectado y escuchando...")
@@ -141,7 +178,7 @@ async def main():
     try:
         pool = await asyncodbc.create_pool(
             dsn=MSSQL_CONN_STR,
-            minsize=6,     # Mejor rendimiento que 10
+            minsize=6,
             maxsize=6,
             autocommit=True
         )
