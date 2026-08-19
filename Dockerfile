@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --no-cache-dir --upgrade \
     paho-mqtt==2.1.0 \
     pyodbc==5.1.0 \
-    aioodbc==0.3.3
+    asyncodbc
 
 COPY run.py /app/run.py
 RUN chmod a+x /app/run.py
