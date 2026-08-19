@@ -1,9 +1,9 @@
 import sys
 import json
 import logging
-import threading
+import asyncio
 import paho.mqtt.client as mqtt
-import pyodbc
+import aioodbc
 
 CONFIG_PATH = "/data/options.json"
 
@@ -45,86 +45,79 @@ CONNECTION_STRING = (
     f"TrustServerCertificate=yes;"
 )
 
-# OBJETO DE BLOQUEO PARA EVITAR QUE LOS EVENTOS MQTT PIBEN EL CURSOR
-db_lock = threading.Lock()
-conn_mssql = None
-cursor_mssql = None
+# Cola asíncrona nativa y bucle de eventos global
+query_queue = asyncio.Queue()
+loop = asyncio.get_event_loop()
 
-def conectar_mssql_persistente():
-    """Establece la conexión única global al arrancar."""
-    global conn_mssql, cursor_mssql
-    try:
-        if conn_mssql is None:
-            logging.info(f"Abriendo conexión persistente con MSSQL ({MSSQL_SERVER})...")
-            conn_mssql = pyodbc.connect(CONNECTION_STRING, timeout=5)
-            # Desactivamos el autocommit para que pyodbc gestione las transacciones individuales rápido
-            conn_mssql.autocommit = True
-            cursor_mssql = conn_mssql.cursor()
-            logging.info("Conexión persistente establecida y lista para ráfagas.")
-    except Exception as e:
-        logging.error(f"Error crítico de conexión inicial a MSSQL: {e}")
-        conn_mssql = None
-        cursor_mssql = None
+async def trabajador_mssql_secuencial():
+    """Consume la cola asíncrona una a una garantizando el orden FIFO estricto de llegada."""
+    while True:
+        try:
+            logging.info(f"Abriendo conexión persistente asíncrona con MSSQL ({MSSQL_SERVER})...")
+            async with aioodbc.connect(dsn=CONNECTION_STRING, loop=loop) as conn:
+                async with conn.cursor() as cursor:
+                    # Activamos el autocommit para máxima velocidad transaccional
+                    await conn.setattr(aioodbc.pyodbc.SQL_ATTR_AUTOCOMMIT, aioodbc.pyodbc.SQL_AUTOCOMMIT_ON)
+                    logging.info("Tubería persistente asíncrona abierta. Procesando cola en orden cronológico...")
+                    
+                    while True:
+                        # Espera de forma no bloqueante a que entre una query en la cola
+                        query_text = await query_queue.get()
+                        
+                        try:
+                            # Se ejecuta de forma asíncrona: libera la CPU mientras viaja por la red
+                            await cursor.execute(query_text)
+                            logging.info("Consulta individual ejecutada con éxito en orden secuencial.")
+                        except Exception as db_error:
+                            logging.error(f"Fallo de ejecución en SQL Server (Fila saltada): {db_error}")
+                            logging.debug(f"Query afectada:\n{query_text}")
+                        finally:
+                            # Informa a la cola que el elemento ha sido procesado
+                            query_queue.task_done()
+                            
+        except Exception as e:
+            logging.error(f"Error en la conexión persistente asíncrona. Reconectando en 5s... Detalle: {e}")
+            await asyncio.sleep(5)
 
 def on_message(client, userdata, msg, properties=None):
-    """Procesa cada mensaje de forma individual al instante a través de la tubería abierta."""
-    global conn_mssql, cursor_mssql
+    """Recibe el mensaje MQTT de forma instantánea y lo mete al final de la cola asíncrona."""
     try:
         query_recibida = msg.payload.decode('utf-8').strip()
-        if not query_recibida:
-            return
-
-        # Aseguramos el formato
-        if not query_recibida.endswith(';'):
-            query_recibida += ';'
-
-        # Sincronizamos el acceso al cursor único abierto para que las queries entren en fila india perfecta
-        with db_lock:
-            # Si por algún motivo la conexión se cayó, la reabrimos en el acto
-            if conn_mssql is None:
-                conectar_mssql_persistente()
+        if query_recibida:
+            if not query_recibida.endswith(';'):
+                query_recibida += ';'
             
-            if conn_mssql:
-                cursor_mssql.execute(query_recibida)
-                logging.info("Consulta ejecutada con éxito a través de la tubería abierta.")
-
-    except pyodbc.Error as db_error:
-        logging.error(f"Fallo de ejecución en SQL Server (Fila saltada): {db_error}")
-        logging.debug(f"Query afectada:\n{query_recibida}")
-        
-        # Si el error es de desconexión, limpiamos las variables para forzar reconexión en el próximo mensaje
-        if "08S01" in str(db_error) or "link failure" in str(db_error).lower():
-            logging.warning("Detectada caída de red con MSSQL. Forzando reinicio de tubería...")
-            try: cursor_mssql.close()
-            except: pass
-            try: conn_mssql.close()
-            except: pass
-            conn_mssql = None
-            cursor_mssql = None
-
+            # Operación en memoria RAM instantánea: mete la query respetando la fila india
+            loop.call_soon_threadsafe(query_queue.put_nowait, query_recibida)
+            logging.debug("Consulta guardada en la cola secuencial asíncrona.")
     except Exception as e:
-        logging.error(f"Error inesperado al procesar el mensaje MQTT: {e}")
+        logging.error(f"Error al procesar el mensaje MQTT: {e}")
 
-# Arrancar la conexión persistente antes de encender MQTT
-conectar_mssql_persistente()
+async def main():
+    # 1. Arrancar el hilo de fondo secuencial asíncrono
+    asyncio.create_task(trabajador_mssql_secuencial())
 
-CLIENT_ID = MQTT_ID
-try:
+    # 2. Configurar cliente MQTT integrado
+    CLIENT_ID = MQTT_ID
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID, clean_session=False)
-except AttributeError:
-    client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)
+    client.on_message = on_message
 
-client.on_message = on_message
+    if MQTT_USER and MQTT_PWD:
+        client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
+        logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
 
-if MQTT_USER and MQTT_PWD:
-    client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
-    logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
+    logging.info("Conectando al bróker MQTT...")
+    client.connect(MQTT_HOST, MQTT_PORT, 60)
+    
+    TOPICO_SQL = MQTT_TOPIC
+    client.subscribe(TOPICO_SQL, qos=1)
+    logging.info(f"Escuchando ráfagas asíncronas SECUENCIALES en: {TOPICO_SQL}")
 
-logging.info("Iniciando puente asíncrono DIRECTO de alta velocidad...")
-client.connect(MQTT_HOST, MQTT_PORT, 60)
+    client.loop_start()
 
-TOPICO_SQL = MQTT_TOPIC
-client.subscribe(TOPICO_SQL, qos=1)
-logging.info(f"Escuchando ráfagas individuales en tiempo real en: {TOPICO_SQL}")
+    # Mantener el loop vivo de forma eficiente
+    while True:
+        await asyncio.sleep(3600)
 
-client.loop_forever()
+if __name__ == "__main__":
+    loop.run_until_complete(main())
