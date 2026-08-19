@@ -1,9 +1,11 @@
 import sys
 import json
 import logging
-import asyncio
+import queue
+import threading
+import time
 import paho.mqtt.client as mqtt
-import aioodbc
+import pymssql  # <- Conector directo por protocolo TDS (Estilo Node-RED)
 
 CONFIG_PATH = "/data/options.json"
 
@@ -36,98 +38,115 @@ MQTT_PWD = config_data.get("mqtt_password", "mqttpwd")
 MQTT_ID = config_data.get("mqtt_id", "mqttid")
 MQTT_TOPIC = config_data.get("mqtt_topic", "mqtt2mssqltopic")
 
-CONNECTION_STRING = (
-    f"DRIVER={{ODBC Driver 18 for SQL Server}};"
-    f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
-    f"DATABASE={MSSQL_DB};"
-    f"UID={MSSQL_USER};"
-    f"PWD={MSSQL_PWD};"
-    f"TrustServerCertificate=yes;"
-)
+# Cola secuencial FIFO nativa ultra veloz
+query_queue = queue.Queue()
 
-# Cola asíncrona y bucle de eventos global
-query_queue = asyncio.Queue()
-loop = asyncio.get_event_loop()
+# CONFIGURACIÓN DEL MICRO-BATCH
+MICRO_BATCH_INTERVAL = 0.2  # Procesa lotes cada 200 milisegundos
+MAX_BATCH_SIZE = 50
 
-# CONFIGURACIÓN DEL MICRO-BATCH (Optimizado para ráfagas)
-MICRO_BATCH_INTERVAL = 0.2  # Vacía la cola hacia MSSQL cada 200 milisegundos
-MAX_BATCH_SIZE = 50        # Límite de seguridad de consultas por bloque
+conn_mssql = None
 
-async def despachador_mssql_micro_batch():
-    """Agrupa las consultas de la cola en micro-lotes secuenciales y los inyecta en un solo viaje de red."""
+def conectar_mssql_tds():
+    """Establece una conexión directa por socket TCP/IP usando protocolo TDS."""
+    global conn_mssql
     while True:
         try:
-            logging.info(f"Abriendo conexión persistente asíncrona con MSSQL ({MSSQL_SERVER})...")
-            async with aioodbc.connect(dsn=CONNECTION_STRING, loop=loop, autocommit=True) as conn:
-                async with conn.cursor() as cursor:
-                    logging.info("Tubería persistente establecida. Motor Micro-Batch listo.")
-                    
-                    while True:
-                        # Esperamos el intervalo de tiempo fijado para acumular ráfagas en la cola
-                        await asyncio.sleep(MICRO_BATCH_INTERVAL)
-                        
-                        lote_queries = []
-                        # Extraemos de la cola todos los mensajes acumulados en este instante
-                        while not query_queue.empty() and len(lote_queries) < MAX_BATCH_SIZE:
-                            query = query_queue.get_nowait()
-                            lote_queries.append(query)
-                            query_queue.task_done()
-                        
-                        if lote_queries:
-                            # Unimos las consultas con saltos de línea e indicamos SET NOCOUNT ON 
-                            # para eliminar el tráfico de red de retorno que bloquea a MSSQL
-                            script_completo = "SET NOCOUNT ON;\n" + "\n".join(lote_queries)
-                            
-                            try:
-                                # Viaja todo el bloque agrupado en un único milisegundo por la red
-                                await cursor.execute(script_completo)
-                                logging.info(f"Micro-lote inyectado con éxito: {len(lote_queries)} consultas procesadas.")
-                            except Exception as db_error:
-                                logging.error(f"Fallo de ejecución en bloque SQL Server: {db_error}")
-                                logging.debug(f"Script del bloque afectado:\n{script_completo}")
-                                
+            if conn_mssql is None:
+                logging.info(f"Abriendo socket TDS directo con MSSQL ({MSSQL_SERVER})...")
+                # pymssql conecta directo por red sin pasar por la capa ODBC de Linux
+                conn_mssql = pymssql.connect(
+                    server=MSSQL_SERVER,
+                    port=int(MSSQL_PORT),
+                    user=MSSQL_USER,
+                    password=MSSQL_PWD,
+                    database=MSSQL_DB,
+                    autocommit=True,
+                    login_timeout=5
+                )
+                logging.info("Tubería TDS directa establecida con éxito.")
+                break
         except Exception as e:
-            logging.error(f"Error en la conexión persistente. Reconectando en 5s... Detalle: {e}")
-            await asyncio.sleep(5)
+            logging.error(f"Fallo en socket TDS. Reintentando en 5s... Detalle: {e}")
+            conn_mssql = None
+            time.sleep(5)
+
+def despachador_mssql_loop():
+    """Hilo de fondo que empaqueta las ráfagas en micro-scripts secuenciales."""
+    global conn_mssql
+    conectar_mssql_tds()
+    
+    while True:
+        time.sleep(MICRO_BATCH_INTERVAL)
+        
+        lote_queries = []
+        while not query_queue.empty() and len(lote_queries) < MAX_BATCH_SIZE:
+            try:
+                query = query_queue.get_nowait()
+                lote_queries.append(query)
+            except queue.Empty:
+                break
+        
+        if lote_queries:
+            script_completo = "SET NOCOUNT ON;\n" + "\n".join(lote_queries)
+            
+            try:
+                if conn_mssql is None:
+                    conectar_mssql_tds()
+                
+                # Usamos un cursor directo sobre el socket TCP de pymssql
+                with conn_mssql.cursor() as cursor:
+                    cursor.execute(script_completo)
+                
+                logging.info(f"Micro-lote TDS inyectado: {len(lote_queries)} consultas procesadas.")
+                
+                # Confirmamos el fin de procesamiento en la cola
+                for _ in lote_queries:
+                    query_queue.task_done()
+                    
+            except Exception as db_error:
+                logging.error(f"Error de red o ejecución en el socket TDS: {db_error}")
+                logging.debug(f"Script afectado:\n{script_completo}")
+                
+                # Si el socket muere, limpiamos la variable para forzar reconexión inmediata
+                conn_mssql = None
+                # Marcar las tareas como hechas para no atascar la cola en bucle
+                for _ in lote_queries:
+                    query_queue.task_done()
 
 def on_message(client, userdata, msg, properties=None):
-    """Recibe los mensajes de MQTT instantáneamente y los mete a la cola en microsegundos."""
     try:
         query_recibida = msg.payload.decode('utf-8').strip()
         if query_recibida:
             if not query_recibida.endswith(';'):
                 query_recibida += ';'
             
-            # Coloca la consulta en la cola respetando la fila india
-            loop.call_soon_threadsafe(query_queue.put_nowait, query_recibida)
-            logging.debug("Consulta encolada en el buffer asíncrono.")
+            query_queue.put(query_recibida)
+            logging.debug("Consulta encolada en el buffer FIFO.")
     except Exception as e:
-        logging.error(f"Error al procesar el mensaje MQTT: {e}")
+        logging.error(f"Error al procesar mensaje MQTT: {e}")
 
-async def main():
-    # 1. Arrancar el consumidor de micro-lotes de fondo
-    asyncio.create_task(despachador_mssql_micro_batch())
+# Iniciar el despachador de fondo
+worker_thread = threading.Thread(target=despachador_mssql_loop, daemon=True)
+worker_thread.start()
 
-    # 2. Configurar cliente MQTT integrado
-    CLIENT_ID = MQTT_ID
+CLIENT_ID = MQTT_ID
+try:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=CLIENT_ID, clean_session=False)
-    client.on_message = on_message
+except AttributeError:
+    client = mqtt.Client(client_id=CLIENT_ID, clean_session=False)
 
-    if MQTT_USER and MQTT_PWD:
-        client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
-        logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
+client.on_message = on_message
 
-    logging.info("Conectando al bróker MQTT...")
-    client.connect(MQTT_HOST, MQTT_PORT, 60)
-    
-    TOPICO_SQL = MQTT_TOPIC
-    client.subscribe(TOPICO_SQL, qos=1)
-    logging.info(f"Escuchando ráfagas asíncronas en: {TOPICO_SQL}")
+if MQTT_USER and MQTT_PWD:
+    client.username_pw_set(username=MQTT_USER, password=MQTT_PWD)
+    logging.info(f"Aplicando credenciales para el usuario MQTT: {MQTT_USER}")
 
-    client.loop_start()
+logging.info("Iniciando puente optimizado por socket nativo TDS (Cero ODBC)...")
+client.connect(MQTT_HOST, MQTT_PORT, 60)
 
-    while True:
-        await asyncio.sleep(3600)
+TOPICO_SQL = MQTT_TOPIC
+client.subscribe(TOPICO_SQL, qos=1)
+logging.info(f"Escuchando ráfagas en el tópico: {TOPICO_SQL}")
 
-if __name__ == "__main__":
-    loop.run_until_complete(main())
+client.loop_forever()
