@@ -8,6 +8,9 @@ LABEL \
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
+# Necesario para descomprimir s6-overlay
+RUN apt-get update && apt-get install -y --no-install-recommends xz-utils
+
 # Instalar s6-overlay
 ADD https://github.com/just-containers/s6-overlay/releases/download/v3.1.5.0/s6-overlay-noarch.tar.xz /tmp/
 ADD https://github.com/just-containers/s6-overlay/releases/download/v3.1.5.0/s6-overlay-x86_64.tar.xz /tmp/
@@ -43,7 +46,6 @@ RUN pip3 install --no-cache-dir --upgrade \
 COPY run.py /app/run.py
 RUN chmod a+x /app/run.py
 
-# Copiar rootfs (scripts s6-overlay)
 # Copiar rootfs (scripts s6-overlay)
 COPY rootfs/ /
 
