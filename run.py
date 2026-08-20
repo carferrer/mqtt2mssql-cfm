@@ -117,8 +117,7 @@ async def worker_sql(pool):
                         logging.warning("Deadlock resuelto en reintento.")
                     except Exception as e2:
                         logging.error(f"Error tras reintento de deadlock: {e2}")
-                    finally:
-                        queue.task_done()
+                    # OJO: aquí ya NO se llama task_done()
                     continue
 
                 # Errores de conexión reales → reconectar
@@ -142,6 +141,7 @@ async def worker_sql(pool):
                     logging.warning("Error SQL normal. No se reconecta.")
 
             finally:
+                # ÚNICO task_done() por cada queue.get()
                 queue.task_done()
 
         except Exception as fatal:
