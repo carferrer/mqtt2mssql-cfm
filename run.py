@@ -259,10 +259,26 @@ if __name__ == "__main__":
 
     try:
         mqtt_client, pool = loop.run_until_complete(main())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         logging.warning("Recibido SIGTERM desde Home Assistant.")
+    except Exception as e:
+        logging.error(f"Error inesperado: {e}")
     finally:
-        loop.run_until_complete(shutdown(pool, mqtt_client))
-        loop.stop()
-        loop.close()
+        try:
+            loop.run_until_complete(shutdown(pool, mqtt_client))
+        except Exception as e:
+            logging.error(f"Error durante shutdown: {e}")
+
+        # Cerrar loop sin lanzar excepciones
+        try:
+            loop.stop()
+        except:
+            pass
+
+        try:
+            loop.close()
+        except:
+            pass
+
         logging.warning("Addon detenido sin errores.")
+        raise SystemExit(0)
