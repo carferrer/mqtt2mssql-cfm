@@ -204,6 +204,12 @@ async def main():
 
     logging.info("Pool MSSQL creado correctamente.")
 
+    # Mensaje visible en cualquier modelo de logs
+    logging.info("===========================================================")
+    logging.info("   MQTT2MSSQL Add-on iniciado correctamente")
+    logging.info("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
+    logging.info("===========================================================")
+
     # Lanzar workers SQL optimizados
     for _ in range(6):
         loop.create_task(worker_sql(pool))
