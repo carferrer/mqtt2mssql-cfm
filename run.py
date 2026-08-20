@@ -68,7 +68,7 @@ asyncio.set_event_loop(loop)
 queue = asyncio.Queue()
 
 # ---------------------------------------------------------
-# WORKER SQL CON RECONEXIÓN INTELIGENTE
+# WORKER SQL CON RECONEXIÓN + REINTENTO DEADLOCK
 # ---------------------------------------------------------
 async def worker_sql(pool):
     conn = None
@@ -107,7 +107,20 @@ async def worker_sql(pool):
                 err = str(e)
                 logging.error(f"SQL ERROR: {err} | {query_text}")
 
-                # Detectar errores de conexión reales
+                # Deadlock → reintentar una vez
+                if "1205" in err or "40001" in err:
+                    logging.warning("Deadlock detectado. Reintentando comando...")
+                    await asyncio.sleep(0.1)
+                    try:
+                        await cursor.execute(query_text)
+                        logging.info("Deadlock resuelto en reintento.")
+                    except Exception as e2:
+                        logging.error(f"Error tras reintento de deadlock: {e2}")
+                    finally:
+                        queue.task_done()
+                    continue
+
+                # Errores de conexión reales → reconectar
                 if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
                     logging.warning("Conexión MSSQL perdida. Reconectando...")
 
