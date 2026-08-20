@@ -4,7 +4,7 @@ import logging
 import paho.mqtt.client as mqtt
 import asyncodbc
 import json
-import os  # ← NUEVO
+import os
 
 # ---------------------------------------------------------
 # CARGAR CONFIGURACIÓN DEL ADD-ON
@@ -27,7 +27,6 @@ MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
 MSSQL_USER = config_data.get("mssql_user", "mssqluser")
 MSSQL_PWD = config_data.get("mssql_password", "mssqlpwd")
 
-# TLS ACTIVADO
 MSSQL_CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
@@ -70,7 +69,7 @@ asyncio.set_event_loop(loop)
 queue = asyncio.Queue()
 
 # ---------------------------------------------------------
-# WORKER SQL CON RECONEXIÓN + REINTENTO DEADLOCK
+# WORKER SQL
 # ---------------------------------------------------------
 async def worker_sql(pool):
     conn = None
@@ -78,7 +77,6 @@ async def worker_sql(pool):
 
     while True:
         try:
-            # Crear conexión si no existe
             if conn is None:
                 try:
                     conn = await pool.acquire()
@@ -98,7 +96,6 @@ async def worker_sql(pool):
                     await asyncio.sleep(1)
                     continue
 
-            # Obtener comando FIFO
             query_text = await queue.get()
 
             try:
@@ -109,7 +106,6 @@ async def worker_sql(pool):
                 err = str(e)
                 logging.error(f"SQL ERROR: {err} | {query_text}")
 
-                # Deadlock → reintentar una vez
                 if "1205" in err or "40001" in err:
                     logging.warning("Deadlock detectado. Reintentando comando...")
                     await asyncio.sleep(0.1)
@@ -118,10 +114,8 @@ async def worker_sql(pool):
                         logging.warning("Deadlock resuelto en reintento.")
                     except Exception as e2:
                         logging.error(f"Error tras reintento de deadlock: {e2}")
-                    # NO task_done() aquí
                     continue
 
-                # Errores de conexión reales → reconectar
                 if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
                     logging.warning("Conexión MSSQL perdida. Reconectando...")
 
@@ -142,7 +136,6 @@ async def worker_sql(pool):
                     logging.warning("Error SQL normal. No se reconecta.")
 
             finally:
-                # ÚNICO task_done() por cada queue.get()
                 queue.task_done()
 
         except Exception as fatal:
@@ -169,7 +162,7 @@ def on_message(client, userdata, msg):
         logging.error(f"Error procesando mensaje MQTT: {e}")
 
 # ---------------------------------------------------------
-# MQTT CLIENT
+# MQTT CLIENT (sin loop_start)
 # ---------------------------------------------------------
 def iniciar_mqtt():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, MQTT_ID)
@@ -182,11 +175,17 @@ def iniciar_mqtt():
     client.connect(MQTT_HOST, MQTT_PORT, 60)
     client.subscribe(MQTT_TOPIC, qos=0)
 
-    client.loop_start()
     logging.warning("MQTT conectado y escuchando...")
 
     return client
 
+# ---------------------------------------------------------
+# MQTT LOOP ASYNCIO
+# ---------------------------------------------------------
+async def mqtt_loop(client):
+    while True:
+        client.loop(timeout=1.0)
+        await asyncio.sleep(0)
 
 # ---------------------------------------------------------
 # MAIN ASYNC
@@ -213,6 +212,8 @@ async def main():
         loop.create_task(worker_sql(pool))
 
     mqtt_client = iniciar_mqtt()
+
+    loop.create_task(mqtt_loop(mqtt_client))
 
     while True:
         await asyncio.sleep(1)
