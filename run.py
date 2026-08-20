@@ -4,6 +4,7 @@ import logging
 import paho.mqtt.client as mqtt
 import asyncodbc
 import json
+import os  # ← NUEVO
 
 # ---------------------------------------------------------
 # CARGAR CONFIGURACIÓN DEL ADD-ON
@@ -117,7 +118,7 @@ async def worker_sql(pool):
                         logging.warning("Deadlock resuelto en reintento.")
                     except Exception as e2:
                         logging.error(f"Error tras reintento de deadlock: {e2}")
-                    # OJO: aquí ya NO se llama task_done()
+                    # NO task_done() aquí
                     continue
 
                 # Errores de conexión reales → reconectar
@@ -186,34 +187,6 @@ def iniciar_mqtt():
 
     return client
 
-# ---------------------------------------------------------
-# APAGADO LIMPIO
-# ---------------------------------------------------------
-async def shutdown(pool, mqtt_client):
-    logging.warning("Apagando addon MQTT2MSSQL...")
-
-    # Cerrar MQTT
-    try:
-        mqtt_client.loop_stop()
-        mqtt_client.disconnect()
-        logging.warning("MQTT desconectado correctamente.")
-    except Exception as e:
-        logging.error(f"Error cerrando MQTT: {e}")
-
-    # Cerrar pool MSSQL
-    try:
-        pool.close()
-        await pool.wait_closed()
-        logging.warning("Pool MSSQL cerrado correctamente.")
-    except Exception as e:
-        logging.error(f"Error cerrando pool MSSQL: {e}")
-
-    # Cancelar tareas activas
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for t in tasks:
-        t.cancel()
-
-    logging.warning("Tareas canceladas. Addon apagado correctamente.")
 
 # ---------------------------------------------------------
 # MAIN ASYNC
@@ -230,21 +203,17 @@ async def main():
 
     logging.warning("Pool MSSQL creado correctamente.")
 
-    # Mensaje visible en cualquier visor de logs
     logging.warning("===========================================================")
     logging.warning("   MQTT2MSSQL Add-on iniciado correctamente")
     logging.warning("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
     logging.warning("   TLS activado en la comunicación con MSSQL")
     logging.warning("===========================================================")
 
-    # Lanzar workers SQL optimizados
     for _ in range(6):
         loop.create_task(worker_sql(pool))
 
-    # Iniciar MQTT
     mqtt_client = iniciar_mqtt()
 
-    # Mantener el loop vivo
     while True:
         await asyncio.sleep(1)
 
@@ -254,9 +223,6 @@ async def main():
 # EJECUCIÓN
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    mqtt_client = None
-    pool = None
-
     try:
         mqtt_client, pool = loop.run_until_complete(main())
     except (KeyboardInterrupt, asyncio.CancelledError):
@@ -264,30 +230,5 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Error inesperado en ejecución principal: {e}")
     finally:
-        # Apagado limpio
-        try:
-            if pool is not None and mqtt_client is not None:
-                loop.run_until_complete(shutdown(pool, mqtt_client))
-        except Exception as e:
-            logging.error(f"Error durante shutdown: {e}")
-
-        # Cancelar tareas pendientes
-        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-        for t in pending:
-            t.cancel()
-        try:
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        except Exception:
-            pass
-
-        # Cerrar loop
-        try:
-            loop.stop()
-        except:
-            pass
-        try:
-            loop.close()
-        except:
-            pass
-
-        logging.warning("Addon detenido sin errores (exit code 0).")
+        logging.warning("Salida inmediata para evitar SIGKILL (exit code 137).")
+        os._exit(0)
