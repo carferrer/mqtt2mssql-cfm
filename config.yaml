@@ -1,5 +1,5 @@
 name: "Puente MQTT a MSSQL"
-version: "2028.08.62"
+version: "2028.08.63"
 slug: "mqtt2mssql-cfm"
 description: "Escucha datos por MQTT y ejecuta INSERTS complejos en MSSQL usando pyodbc nativo"
 url: "https://github.com/carferrer/mqtt2mssql-cfm"
