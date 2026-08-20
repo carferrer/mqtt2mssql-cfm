@@ -160,7 +160,7 @@ def on_message(client, userdata, msg):
         if query[-1] != ";":
             query += ";"
 
-        logging.warning(f"MQTT recibido → {query}")
+        logging.info(f"MQTT recibido → {query}")
 
         loop.call_soon_threadsafe(queue.put_nowait, query)
 
