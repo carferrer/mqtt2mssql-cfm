@@ -260,25 +260,34 @@ if __name__ == "__main__":
     try:
         mqtt_client, pool = loop.run_until_complete(main())
     except (KeyboardInterrupt, asyncio.CancelledError):
-        logging.warning("Recibido SIGTERM desde Home Assistant.")
+        logging.warning("Recibido señal de parada desde Home Assistant.")
     except Exception as e:
-        logging.error(f"Error inesperado: {e}")
+        logging.error(f"Error inesperado en ejecución principal: {e}")
     finally:
+        # Apagado limpio
         try:
-            loop.run_until_complete(shutdown(pool, mqtt_client))
+            if pool is not None and mqtt_client is not None:
+                loop.run_until_complete(shutdown(pool, mqtt_client))
         except Exception as e:
             logging.error(f"Error durante shutdown: {e}")
 
-        # Cerrar loop sin lanzar excepciones
+        # Cancelar tareas pendientes
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for t in pending:
+            t.cancel()
+        try:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception:
+            pass
+
+        # Cerrar loop
         try:
             loop.stop()
         except:
             pass
-
         try:
             loop.close()
         except:
             pass
 
-        logging.warning("Addon detenido sin errores.")
-        raise SystemExit(0)
+        logging.warning("Addon detenido sin errores (exit code 0).")
