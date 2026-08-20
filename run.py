@@ -4,7 +4,6 @@ import logging
 import paho.mqtt.client as mqtt
 import asyncodbc
 import json
-import os
 
 # ---------------------------------------------------------
 # CARGAR CONFIGURACIÓN DEL ADD-ON
@@ -69,7 +68,7 @@ asyncio.set_event_loop(loop)
 queue = asyncio.Queue()
 
 # ---------------------------------------------------------
-# WORKER SQL CON RECONEXIÓN AUTOMÁTICA
+# WORKER SQL CON RECONEXIÓN INTELIGENTE
 # ---------------------------------------------------------
 async def worker_sql(pool):
     conn = None
@@ -77,7 +76,7 @@ async def worker_sql(pool):
 
     while True:
         try:
-            # Si no hay conexión, crear una nueva
+            # Crear conexión si no existe
             if conn is None:
                 try:
                     conn = await pool.acquire()
@@ -85,9 +84,8 @@ async def worker_sql(pool):
 
                     try:
                         cursor.fast_executemany = True
-                        logging.info("fast_executemany activado en worker SQL")
-                    except Exception:
-                        logging.info("fast_executemany no soportado por el driver")
+                    except:
+                        pass
 
                     logging.info("Conexión MSSQL establecida en worker")
 
@@ -103,26 +101,31 @@ async def worker_sql(pool):
 
             try:
                 await cursor.execute(query_text)
-                logging.debug(f"SQL ejecutado correctamente: {query_text}")
+                logging.debug(f"SQL OK: {query_text}")
 
             except Exception as e:
-                logging.error(f"Error ejecutando SQL: {e} | Comando: {query_text}")
+                err = str(e)
+                logging.error(f"SQL ERROR: {err} | {query_text}")
 
-                # Cerrar cursor y conexión para forzar reconexión
-                try:
-                    await cursor.close()
-                except:
-                    pass
+                # Detectar errores de conexión reales
+                if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
+                    logging.warning("Conexión MSSQL perdida. Reconectando...")
 
-                try:
-                    await conn.close()
-                except:
-                    pass
+                    try:
+                        await cursor.close()
+                    except:
+                        pass
 
-                logging.warning("Conexión MSSQL perdida. Intentando reconectar...")
+                    try:
+                        await conn.close()
+                    except:
+                        pass
 
-                conn = None
-                cursor = None
+                    conn = None
+                    cursor = None
+
+                else:
+                    logging.warning("Error SQL normal. No se reconecta.")
 
             finally:
                 queue.task_done()
