@@ -26,13 +26,14 @@ MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
 MSSQL_USER = config_data.get("mssql_user", "mssqluser")
 MSSQL_PWD = config_data.get("mssql_password", "mssqlpwd")
 
+# TLS ACTIVADO
 MSSQL_CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
     f"DATABASE={MSSQL_DB};"
     f"UID={MSSQL_USER};"
     f"PWD={MSSQL_PWD};"
-    f"Encrypt=no;"
+    f"Encrypt=yes;"
     f"TrustServerCertificate=yes;"
 )
 
@@ -204,10 +205,11 @@ async def main():
 
     logging.info("Pool MSSQL creado correctamente.")
 
-    # Mensaje visible en cualquier modelo de logs
+    # Mensaje visible en cualquier visor de logs
     logging.info("===========================================================")
     logging.info("   MQTT2MSSQL Add-on iniciado correctamente")
     logging.info("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
+    logging.info("   TLS activado en la comunicación con MSSQL")
     logging.info("===========================================================")
 
     # Lanzar workers SQL optimizados
