@@ -50,7 +50,7 @@ MQTT_TOPIC = config_data.get("mqtt_topic", "mqtt2mssql/query")
 # ---------------------------------------------------------
 # LOGGING
 # ---------------------------------------------------------
-LOG_LEVEL = config_data.get("log_level", "INFO").upper()
+LOG_LEVEL = config_data.get("log_level", "WARNING").upper()
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -88,7 +88,7 @@ async def worker_sql(pool):
                     except:
                         pass
 
-                    logging.info("Conexión MSSQL establecida en worker")
+                    logging.warning("Conexión MSSQL establecida en worker")
 
                 except Exception as e:
                     logging.error(f"Error creando conexión MSSQL: {e}")
@@ -114,7 +114,7 @@ async def worker_sql(pool):
                     await asyncio.sleep(0.1)
                     try:
                         await cursor.execute(query_text)
-                        logging.info("Deadlock resuelto en reintento.")
+                        logging.warning("Deadlock resuelto en reintento.")
                     except Exception as e2:
                         logging.error(f"Error tras reintento de deadlock: {e2}")
                     finally:
@@ -160,7 +160,7 @@ def on_message(client, userdata, msg):
         if query[-1] != ";":
             query += ";"
 
-        logging.info(f"MQTT recibido → {query}")
+        logging.warning(f"MQTT recibido → {query}")
 
         loop.call_soon_threadsafe(queue.put_nowait, query)
 
@@ -182,55 +182,87 @@ def iniciar_mqtt():
     client.subscribe(MQTT_TOPIC, qos=0)
 
     client.loop_start()
-    logging.info("MQTT conectado y escuchando...")
+    logging.warning("MQTT conectado y escuchando...")
 
     return client
+
+# ---------------------------------------------------------
+# APAGADO LIMPIO
+# ---------------------------------------------------------
+async def shutdown(pool, mqtt_client):
+    logging.warning("Apagando addon MQTT2MSSQL...")
+
+    # Cerrar MQTT
+    try:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+        logging.warning("MQTT desconectado correctamente.")
+    except Exception as e:
+        logging.error(f"Error cerrando MQTT: {e}")
+
+    # Cerrar pool MSSQL
+    try:
+        pool.close()
+        await pool.wait_closed()
+        logging.warning("Pool MSSQL cerrado correctamente.")
+    except Exception as e:
+        logging.error(f"Error cerrando pool MSSQL: {e}")
+
+    # Cancelar tareas activas
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for t in tasks:
+        t.cancel()
+
+    logging.warning("Tareas canceladas. Addon apagado correctamente.")
 
 # ---------------------------------------------------------
 # MAIN ASYNC
 # ---------------------------------------------------------
 async def main():
-    logging.info("Creando pool MSSQL optimizado...")
+    logging.warning("Creando pool MSSQL optimizado...")
 
-    try:
-        pool = await asyncodbc.create_pool(
-            dsn=MSSQL_CONN_STR,
-            minsize=6,
-            maxsize=6,
-            autocommit=True
-        )
-    except Exception as e:
-        logging.error(f"Error creando pool MSSQL: {e}")
-        raise
+    pool = await asyncodbc.create_pool(
+        dsn=MSSQL_CONN_STR,
+        minsize=6,
+        maxsize=6,
+        autocommit=True
+    )
 
-    logging.info("Pool MSSQL creado correctamente.")
+    logging.warning("Pool MSSQL creado correctamente.")
 
     # Mensaje visible en cualquier visor de logs
-    logging.info("===========================================================")
-    logging.info("   MQTT2MSSQL Add-on iniciado correctamente")
-    logging.info("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
-    logging.info("   TLS activado en la comunicación con MSSQL")
-    logging.info("===========================================================")
+    logging.warning("===========================================================")
+    logging.warning("   MQTT2MSSQL Add-on iniciado correctamente")
+    logging.warning("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
+    logging.warning("   TLS activado en la comunicación con MSSQL")
+    logging.warning("===========================================================")
 
     # Lanzar workers SQL optimizados
     for _ in range(6):
         loop.create_task(worker_sql(pool))
 
     # Iniciar MQTT
-    iniciar_mqtt()
+    mqtt_client = iniciar_mqtt()
 
     # Mantener el loop vivo
     while True:
         await asyncio.sleep(1)
 
+    return mqtt_client, pool
+
 # ---------------------------------------------------------
 # EJECUCIÓN
 # ---------------------------------------------------------
 if __name__ == "__main__":
+    mqtt_client = None
+    pool = None
+
     try:
-        loop.run_until_complete(main())
+        mqtt_client, pool = loop.run_until_complete(main())
     except KeyboardInterrupt:
-        logging.info("Cerrando addon...")
+        logging.warning("Recibido SIGTERM desde Home Assistant.")
     finally:
+        loop.run_until_complete(shutdown(pool, mqtt_client))
         loop.stop()
         loop.close()
+        logging.warning("Addon detenido sin errores.")
