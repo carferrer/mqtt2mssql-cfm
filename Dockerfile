@@ -44,6 +44,11 @@ COPY run.py /app/run.py
 RUN chmod a+x /app/run.py
 
 # Copiar rootfs (scripts s6-overlay)
+# Copiar rootfs (scripts s6-overlay)
 COPY rootfs/ /
+
+# Dar permisos de ejecución a los scripts
+RUN chmod +x /etc/services.d/app/run && \
+    chmod +x /etc/services.d/app/finish
 
 ENTRYPOINT ["/init"]
