@@ -4,7 +4,6 @@ import logging
 import paho.mqtt.client as mqtt
 import pyodbc
 import json
-import os
 
 # ---------------------------------------------------------
 # CARGAR CONFIGURACIÓN DEL ADD-ON
@@ -15,7 +14,7 @@ try:
     with open(CONFIG_PATH, "r") as f:
         config_data = json.load(f)
 except Exception as e:
-    logging.error(f"ERROR cargando configuración {CONFIG_PATH}: {e}")
+    logging.debug(f"ERROR cargando configuración {CONFIG_PATH}: {e}")
     config_data = {}
 
 # ---------------------------------------------------------
@@ -64,35 +63,36 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ---------------------------------------------------------
-# COLA FIFO LIMITADA (evita explosión si MSSQL cae)
+# COLA FIFO GRANDE + BACKPRESSURE
 # ---------------------------------------------------------
-queue = asyncio.Queue(maxsize=500)
+queue = asyncio.Queue(maxsize=5000)
 
 # ---------------------------------------------------------
-# WORKER SQL (pyodbc, reconexión inteligente)
+# WORKER SQL (pyodbc, máximo rendimiento)
 # ---------------------------------------------------------
-async def worker_sql(worker_id):
+async def worker_sql(worker_id: int):
     conn = None
     cursor = None
     backoff = 1
 
     while True:
         try:
-            # Crear conexión si no existe
             if conn is None:
                 try:
                     conn = pyodbc.connect(MSSQL_CONN_STR, timeout=5)
                     cursor = conn.cursor()
-                    cursor.fast_executemany = True
-                    logging.warning(f"[Worker {worker_id}] Conexión MSSQL establecida")
-                    backoff = 1  # reset backoff
+                    try:
+                        cursor.fast_executemany = True
+                    except:
+                        pass
+                    logging.info(f"[Worker {worker_id}] Conexión MSSQL establecida")
+                    backoff = 1
                 except Exception as e:
                     logging.error(f"[Worker {worker_id}] Error conectando MSSQL: {e}")
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 30)
                     continue
 
-            # Obtener comando FIFO
             query_text = await queue.get()
 
             try:
@@ -104,7 +104,6 @@ async def worker_sql(worker_id):
                 err = str(e)
                 logging.error(f"[Worker {worker_id}] SQL ERROR: {err} | {query_text}")
 
-                # Deadlock → reintentar una vez
                 if "1205" in err or "40001" in err:
                     logging.warning(f"[Worker {worker_id}] Deadlock detectado. Reintentando...")
                     await asyncio.sleep(0.1)
@@ -117,10 +116,8 @@ async def worker_sql(worker_id):
                     queue.task_done()
                     continue
 
-                # Errores de conexión → reconectar
                 if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
                     logging.warning(f"[Worker {worker_id}] Conexión MSSQL perdida. Reconectando...")
-
                     try:
                         cursor.close()
                     except:
@@ -129,7 +126,6 @@ async def worker_sql(worker_id):
                         conn.close()
                     except:
                         pass
-
                     conn = None
                     cursor = None
                 else:
@@ -145,7 +141,7 @@ async def worker_sql(worker_id):
             await asyncio.sleep(1)
 
 # ---------------------------------------------------------
-# PROCESAR MENSAJE MQTT
+# PROCESAR MENSAJE MQTT (FIFO + backpressure)
 # ---------------------------------------------------------
 def on_message(client, userdata, msg):
     try:
@@ -156,10 +152,14 @@ def on_message(client, userdata, msg):
 
         logging.info(f"MQTT recibido → {query}")
 
-        try:
-            loop.call_soon_threadsafe(queue.put_nowait, query)
-        except asyncio.QueueFull:
-            logging.error("Cola llena, descartando mensaje MQTT")
+        def push():
+            try:
+                queue.put_nowait(query)
+            except asyncio.QueueFull:
+                logging.warning("Cola llena, reintentando en 50ms...")
+                loop.call_later(0.05, push)
+
+        loop.call_soon_threadsafe(push)
 
     except Exception as e:
         logging.error(f"Error procesando mensaje MQTT: {e}")
@@ -188,26 +188,23 @@ def iniciar_mqtt():
 # ---------------------------------------------------------
 async def main():
     logging.warning("===========================================================")
-    logging.warning("   MQTT2MSSQL Add-on iniciado correctamente")
-    logging.warning("   Workers SQL activos, MQTT escuchando")
-    logging.warning("   TLS activado en la comunicación con MSSQL")
+    logging.warning("   MQTT2MSSQL Add-on iniciado (máximo rendimiento)")
+    logging.warning("   20 workers SQL, cola 5000, backpressure activo")
     logging.warning("===========================================================")
 
-    # Lanzar workers SQL
-    for i in range(6):
+    for i in range(20):
         loop.create_task(worker_sql(i))
 
     mqtt_client = iniciar_mqtt()
 
-    # Mantener vivo el servicio
     await asyncio.Event().wait()
-
     return mqtt_client
 
 # ---------------------------------------------------------
 # EJECUCIÓN
 # ---------------------------------------------------------
 if __name__ == "__main__":
+    mqtt_client = None
     try:
         mqtt_client = loop.run_until_complete(main())
     except Exception as e:
@@ -215,9 +212,9 @@ if __name__ == "__main__":
     finally:
         logging.warning("Cerrando MQTT...")
         try:
-            mqtt_client.loop_stop()
-            mqtt_client.disconnect()
+            if mqtt_client is not None:
+                mqtt_client.loop_stop()
+                mqtt_client.disconnect()
         except:
             pass
-
         logging.warning("Add-on detenido correctamente.")
