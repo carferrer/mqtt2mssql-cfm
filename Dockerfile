@@ -8,22 +8,6 @@ LABEL \
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
-ENV TZ=Europe/Madrid
-RUN apt-get update && \
-    apt-get install -y tzdata && \
-    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
-    echo $TZ > /etc/timezone
-
-# Necesario para descomprimir s6-overlay
-RUN apt-get update && apt-get install -y --no-install-recommends xz-utils
-
-# Instalar s6-overlay
-ADD https://github.com/just-containers/s6-overlay/releases/download/v3.1.5.0/s6-overlay-noarch.tar.xz /tmp/
-ADD https://github.com/just-containers/s6-overlay/releases/download/v3.1.5.0/s6-overlay-x86_64.tar.xz /tmp/
-RUN tar -C / -Jxvf /tmp/s6-overlay-noarch.tar.xz && \
-    tar -C / -Jxvf /tmp/s6-overlay-x86_64.tar.xz && \
-    rm /tmp/s6-overlay-noarch.tar.xz /tmp/s6-overlay-x86_64.tar.xz
-
 # Dependencias base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -33,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar ODBC Driver 18
+# Instalar ODBC Driver 18 para SQL Server (método moderno compatible con GitHub Actions)
 RUN curl https://packages.microsoft.com/keys/microsoft.asc \
         | gpg --dearmor \
         | tee /usr/share/keyrings/microsoft.gpg > /dev/null \
@@ -52,11 +36,4 @@ RUN pip3 install --no-cache-dir --upgrade \
 COPY run.py /app/run.py
 RUN chmod a+x /app/run.py
 
-# Copiar rootfs (scripts s6-overlay)
-COPY rootfs/ /
-
-# Dar permisos de ejecución a los scripts
-RUN chmod +x /etc/services.d/app/run && \
-    chmod +x /etc/services.d/app/finish
-
-ENTRYPOINT ["/init"]
+ENTRYPOINT ["python3", "/app/run.py"]
