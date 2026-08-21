@@ -167,7 +167,7 @@ def on_message(client, userdata, msg):
 # ---------------------------------------------------------
 # MQTT CALLBACKS: CONEXIÓN / DESCONEXIÓN
 # ---------------------------------------------------------
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties):
     logging.warning(f"MQTT conectado (rc={rc}). Suscribiendo al topic...")
     try:
         client.subscribe(MQTT_TOPIC, qos=0)
@@ -175,7 +175,8 @@ def on_connect(client, userdata, flags, rc):
     except Exception as e:
         logging.error(f"Error suscribiendo al topic MQTT: {e}")
 
-def on_disconnect(client, userdata, rc):
+
+def on_disconnect(client, userdata, rc, properties):
     logging.warning(f"MQTT desconectado (rc={rc}). Intentando reconectar...")
 
     delay = 1
