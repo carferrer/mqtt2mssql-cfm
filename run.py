@@ -2,8 +2,9 @@
 import asyncio
 import logging
 import paho.mqtt.client as mqtt
-import pyodbc
+import asyncodbc
 import json
+import os  # ← NUEVO
 
 # ---------------------------------------------------------
 # CARGAR CONFIGURACIÓN DEL ADD-ON
@@ -14,7 +15,7 @@ try:
     with open(CONFIG_PATH, "r") as f:
         config_data = json.load(f)
 except Exception as e:
-    logging.debug(f"ERROR cargando configuración {CONFIG_PATH}: {e}")
+    print(f"ERROR cargando configuración {CONFIG_PATH}: {e}")
     config_data = {}
 
 # ---------------------------------------------------------
@@ -26,6 +27,7 @@ MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
 MSSQL_USER = config_data.get("mssql_user", "mssqluser")
 MSSQL_PWD = config_data.get("mssql_password", "mssqlpwd")
 
+# TLS ACTIVADO
 MSSQL_CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
@@ -63,107 +65,88 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ---------------------------------------------------------
-# COLA FIFO GRANDE
+# COLA FIFO
 # ---------------------------------------------------------
-queue = asyncio.Queue(maxsize=10000)
-
-# Tamaño de batch y tiempo máximo de espera
-BATCH_SIZE = 200        # nº máximo de mensajes por lote
-BATCH_TIMEOUT = 0.05    # segundos máximo que espera para completar lote
+queue = asyncio.Queue()
 
 # ---------------------------------------------------------
-# WORKER SQL CON BATCHING
+# WORKER SQL CON RECONEXIÓN + REINTENTO DEADLOCK
 # ---------------------------------------------------------
-async def worker_sql(worker_id: int):
+async def worker_sql(pool):
     conn = None
     cursor = None
-    backoff = 1
 
     while True:
         try:
+            # Crear conexión si no existe
             if conn is None:
                 try:
-                    conn = pyodbc.connect(MSSQL_CONN_STR, timeout=5)
-                    cursor = conn.cursor()
+                    conn = await pool.acquire()
+                    cursor = await conn.cursor()
+
                     try:
                         cursor.fast_executemany = True
                     except:
                         pass
-                    logging.info(f"[Worker {worker_id}] Conexión MSSQL establecida")
-                    backoff = 1
+
+                    logging.warning("Conexión MSSQL establecida en worker")
+
                 except Exception as e:
-                    logging.error(f"[Worker {worker_id}] Error conectando MSSQL: {e}")
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 30)
+                    logging.error(f"Error creando conexión MSSQL: {e}")
+                    conn = None
+                    cursor = None
+                    await asyncio.sleep(1)
                     continue
 
-            # Construir un batch
-            batch = []
-            try:
-                # Primer mensaje (bloqueante)
-                query_text = await queue.get()
-                batch.append(query_text)
-
-                # Intentar completar el batch sin bloquear demasiado
-                start = loop.time()
-                while len(batch) < BATCH_SIZE and (loop.time() - start) < BATCH_TIMEOUT:
-                    try:
-                        q = queue.get_nowait()
-                        batch.append(q)
-                    except asyncio.QueueEmpty:
-                        await asyncio.sleep(0.001)
-                        break
-            except Exception as e:
-                logging.error(f"[Worker {worker_id}] Error obteniendo batch: {e}")
-                continue
-
-            # Aquí tienes un batch de N consultas (strings)
-            # Estrategia simple: concatenar todas las sentencias en un solo comando
-            # IMPORTANTE: esto asume que cada query_text es una sentencia completa terminada en ';'
-            sql_batch = "\n".join(batch)
+            # Obtener comando FIFO
+            query_text = await queue.get()
 
             try:
-                cursor.execute(sql_batch)
-                conn.commit()
-                logging.debug(f"[Worker {worker_id}] Batch OK ({len(batch)} consultas)")
+                await cursor.execute(query_text)
+                logging.debug(f"SQL OK: {query_text}")
+
             except Exception as e:
                 err = str(e)
-                logging.error(f"[Worker {worker_id}] SQL ERROR en batch: {err}")
+                logging.error(f"SQL ERROR: {err} | {query_text}")
 
-                # Deadlock → reintentar una vez el batch completo
+                # Deadlock → reintentar una vez
                 if "1205" in err or "40001" in err:
-                    logging.warning(f"[Worker {worker_id}] Deadlock en batch. Reintentando...")
+                    logging.warning("Deadlock detectado. Reintentando comando...")
                     await asyncio.sleep(0.1)
                     try:
-                        cursor.execute(sql_batch)
-                        conn.commit()
-                        logging.warning(f"[Worker {worker_id}] Deadlock resuelto en batch.")
+                        await cursor.execute(query_text)
+                        logging.warning("Deadlock resuelto en reintento.")
                     except Exception as e2:
-                        logging.error(f"[Worker {worker_id}] Error tras reintento de batch: {e2}")
+                        logging.error(f"Error tras reintento de deadlock: {e2}")
+                    # NO task_done() aquí
+                    continue
+
+                # Errores de conexión reales → reconectar
+                if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
+                    logging.warning("Conexión MSSQL perdida. Reconectando...")
+
+                    try:
+                        await cursor.close()
+                    except:
+                        pass
+
+                    try:
+                        await conn.close()
+                    except:
+                        pass
+
+                    conn = None
+                    cursor = None
+
                 else:
-                    # Errores de conexión → reconectar
-                    if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
-                        logging.warning(f"[Worker {worker_id}] Conexión MSSQL perdida. Reconectando...")
-                        try:
-                            cursor.close()
-                        except:
-                            pass
-                        try:
-                            conn.close()
-                        except:
-                            pass
-                        conn = None
-                        cursor = None
-                    else:
-                        logging.warning(f"[Worker {worker_id}] Error SQL normal en batch.")
+                    logging.warning("Error SQL normal. No se reconecta.")
 
             finally:
-                # Marcar todos los mensajes del batch como procesados
-                for _ in batch:
-                    queue.task_done()
+                # ÚNICO task_done() por cada queue.get()
+                queue.task_done()
 
         except Exception as fatal:
-            logging.error(f"[Worker {worker_id}] Error fatal: {fatal}")
+            logging.error(f"Error fatal en worker: {fatal}")
             conn = None
             cursor = None
             await asyncio.sleep(1)
@@ -175,19 +158,12 @@ def on_message(client, userdata, msg):
     try:
         query = msg.payload.decode("utf-8")
 
-        if not query.endswith(";"):
+        if query[-1] != ";":
             query += ";"
 
         logging.info(f"MQTT recibido → {query}")
 
-        def push():
-            try:
-                queue.put_nowait(query)
-            except asyncio.QueueFull:
-                logging.warning("Cola llena, reintentando en 50ms...")
-                loop.call_later(0.05, push)
-
-        loop.call_soon_threadsafe(push)
+        loop.call_soon_threadsafe(queue.put_nowait, query)
 
     except Exception as e:
         logging.error(f"Error procesando mensaje MQTT: {e}")
@@ -211,39 +187,48 @@ def iniciar_mqtt():
 
     return client
 
+
 # ---------------------------------------------------------
 # MAIN ASYNC
 # ---------------------------------------------------------
 async def main():
+    logging.warning("Creando pool MSSQL optimizado...")
+
+    pool = await asyncodbc.create_pool(
+        dsn=MSSQL_CONN_STR,
+        minsize=6,
+        maxsize=6,
+        autocommit=True
+    )
+
+    logging.warning("Pool MSSQL creado correctamente.")
+
     logging.warning("===========================================================")
-    logging.warning("   MQTT2MSSQL Add-on iniciado (batching extremo)")
-    logging.warning(f"   BATCH_SIZE={BATCH_SIZE}, BATCH_TIMEOUT={BATCH_TIMEOUT}s")
+    logging.warning("   MQTT2MSSQL Add-on iniciado correctamente")
+    logging.warning("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
+    logging.warning("   TLS activado en la comunicación con MSSQL")
     logging.warning("===========================================================")
 
-    # Ajusta el nº de workers según la potencia de tu MSSQL
-    for i in range(10):
-        loop.create_task(worker_sql(i))
+    for _ in range(12):
+        loop.create_task(worker_sql(pool))
 
     mqtt_client = iniciar_mqtt()
 
-    await asyncio.Event().wait()
-    return mqtt_client
+    while True:
+        await asyncio.sleep(1)
+
+    return mqtt_client, pool
 
 # ---------------------------------------------------------
 # EJECUCIÓN
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    mqtt_client = None
     try:
-        mqtt_client = loop.run_until_complete(main())
+        mqtt_client, pool = loop.run_until_complete(main())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logging.warning("Recibido señal de parada desde Home Assistant.")
     except Exception as e:
         logging.error(f"Error inesperado en ejecución principal: {e}")
     finally:
-        logging.warning("Cerrando MQTT...")
-        try:
-            if mqtt_client is not None:
-                mqtt_client.loop_stop()
-                mqtt_client.disconnect()
-        except:
-            pass
-        logging.warning("Add-on detenido correctamente.")
+        logging.warning("Salida inmediata para evitar SIGKILL (exit code 137).")
+        os._exit(0)
