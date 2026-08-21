@@ -4,7 +4,8 @@ import logging
 import paho.mqtt.client as mqtt
 import asyncodbc
 import json
-import os  # ← NUEVO
+import os
+import time
 
 # ---------------------------------------------------------
 # CARGAR CONFIGURACIÓN DEL ADD-ON
@@ -27,7 +28,6 @@ MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
 MSSQL_USER = config_data.get("mssql_user", "mssqluser")
 MSSQL_PWD = config_data.get("mssql_password", "mssqlpwd")
 
-# TLS ACTIVADO
 MSSQL_CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
@@ -65,7 +65,7 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ---------------------------------------------------------
-# COLA FIFO
+# COLA FIFO (INFINITA)
 # ---------------------------------------------------------
 queue = asyncio.Queue()
 
@@ -78,7 +78,6 @@ async def worker_sql(pool):
 
     while True:
         try:
-            # Crear conexión si no existe
             if conn is None:
                 try:
                     conn = await pool.acquire()
@@ -98,7 +97,6 @@ async def worker_sql(pool):
                     await asyncio.sleep(1)
                     continue
 
-            # Obtener comando FIFO
             query_text = await queue.get()
 
             try:
@@ -118,7 +116,6 @@ async def worker_sql(pool):
                         logging.warning("Deadlock resuelto en reintento.")
                     except Exception as e2:
                         logging.error(f"Error tras reintento de deadlock: {e2}")
-                    # NO task_done() aquí
                     continue
 
                 # Errores de conexión reales → reconectar
@@ -142,7 +139,6 @@ async def worker_sql(pool):
                     logging.warning("Error SQL normal. No se reconecta.")
 
             finally:
-                # ÚNICO task_done() por cada queue.get()
                 queue.task_done()
 
         except Exception as fatal:
@@ -158,7 +154,7 @@ def on_message(client, userdata, msg):
     try:
         query = msg.payload.decode("utf-8")
 
-        if query[-1] != ";":
+        if not query.endswith(";"):
             query += ";"
 
         logging.info(f"MQTT recibido → {query}")
@@ -167,6 +163,31 @@ def on_message(client, userdata, msg):
 
     except Exception as e:
         logging.error(f"Error procesando mensaje MQTT: {e}")
+
+# ---------------------------------------------------------
+# MQTT CALLBACKS: CONEXIÓN / DESCONEXIÓN
+# ---------------------------------------------------------
+def on_connect(client, userdata, flags, rc):
+    logging.warning(f"MQTT conectado (rc={rc}). Suscribiendo al topic...")
+    try:
+        client.subscribe(MQTT_TOPIC, qos=0)
+        logging.warning("Suscripción MQTT realizada correctamente.")
+    except Exception as e:
+        logging.error(f"Error suscribiendo al topic MQTT: {e}")
+
+def on_disconnect(client, userdata, rc):
+    logging.warning(f"MQTT desconectado (rc={rc}). Intentando reconectar...")
+
+    delay = 1
+    while True:
+        try:
+            client.reconnect()
+            logging.warning("MQTT reconectado correctamente.")
+            return
+        except Exception as e:
+            logging.error(f"Error reconectando MQTT: {e}")
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
 
 # ---------------------------------------------------------
 # MQTT CLIENT
@@ -178,15 +199,15 @@ def iniciar_mqtt():
         client.username_pw_set(MQTT_USER, MQTT_PWD)
 
     client.on_message = on_message
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
 
     client.connect(MQTT_HOST, MQTT_PORT, 60)
-    client.subscribe(MQTT_TOPIC, qos=0)
-
     client.loop_start()
+
     logging.warning("MQTT conectado y escuchando...")
 
     return client
-
 
 # ---------------------------------------------------------
 # MAIN ASYNC
@@ -196,8 +217,8 @@ async def main():
 
     pool = await asyncodbc.create_pool(
         dsn=MSSQL_CONN_STR,
-        minsize=6,
-        maxsize=6,
+        minsize=12,
+        maxsize=12,
         autocommit=True
     )
 
@@ -205,7 +226,7 @@ async def main():
 
     logging.warning("===========================================================")
     logging.warning("   MQTT2MSSQL Add-on iniciado correctamente")
-    logging.warning("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
+    logging.warning("   Workers SQL activos (12), MQTT escuchando, pool MSSQL OK")
     logging.warning("   TLS activado en la comunicación con MSSQL")
     logging.warning("===========================================================")
 
