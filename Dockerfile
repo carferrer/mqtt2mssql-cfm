@@ -8,6 +8,12 @@ LABEL \
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
+ENV TZ=Europe/Madrid
+RUN apt-get update && \
+    apt-get install -y tzdata && \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
 # Necesario para descomprimir s6-overlay
 RUN apt-get update && apt-get install -y --no-install-recommends xz-utils
 
