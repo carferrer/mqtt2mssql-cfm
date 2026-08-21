@@ -2,9 +2,9 @@
 import asyncio
 import logging
 import paho.mqtt.client as mqtt
-import asyncodbc
+import pyodbc
 import json
-import os  # ← NUEVO
+import os
 
 # ---------------------------------------------------------
 # CARGAR CONFIGURACIÓN DEL ADD-ON
@@ -15,7 +15,7 @@ try:
     with open(CONFIG_PATH, "r") as f:
         config_data = json.load(f)
 except Exception as e:
-    print(f"ERROR cargando configuración {CONFIG_PATH}: {e}")
+    logging.error(f"ERROR cargando configuración {CONFIG_PATH}: {e}")
     config_data = {}
 
 # ---------------------------------------------------------
@@ -27,7 +27,6 @@ MSSQL_DB = config_data.get("mssql_database", "mssqlbbdd")
 MSSQL_USER = config_data.get("mssql_user", "mssqluser")
 MSSQL_PWD = config_data.get("mssql_password", "mssqlpwd")
 
-# TLS ACTIVADO
 MSSQL_CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER={MSSQL_SERVER},{MSSQL_PORT};"
@@ -65,88 +64,82 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ---------------------------------------------------------
-# COLA FIFO
+# COLA FIFO LIMITADA (evita explosión si MSSQL cae)
 # ---------------------------------------------------------
-queue = asyncio.Queue()
+queue = asyncio.Queue(maxsize=500)
 
 # ---------------------------------------------------------
-# WORKER SQL CON RECONEXIÓN + REINTENTO DEADLOCK
+# WORKER SQL (pyodbc, reconexión inteligente)
 # ---------------------------------------------------------
-async def worker_sql(pool):
+async def worker_sql(worker_id):
     conn = None
     cursor = None
+    backoff = 1
 
     while True:
         try:
             # Crear conexión si no existe
             if conn is None:
                 try:
-                    conn = await pool.acquire()
-                    cursor = await conn.cursor()
-
-                    try:
-                        cursor.fast_executemany = True
-                    except:
-                        pass
-
-                    logging.warning("Conexión MSSQL establecida en worker")
-
+                    conn = pyodbc.connect(MSSQL_CONN_STR, timeout=5)
+                    cursor = conn.cursor()
+                    cursor.fast_executemany = True
+                    logging.warning(f"[Worker {worker_id}] Conexión MSSQL establecida")
+                    backoff = 1  # reset backoff
                 except Exception as e:
-                    logging.error(f"Error creando conexión MSSQL: {e}")
-                    conn = None
-                    cursor = None
-                    await asyncio.sleep(1)
+                    logging.error(f"[Worker {worker_id}] Error conectando MSSQL: {e}")
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
                     continue
 
             # Obtener comando FIFO
             query_text = await queue.get()
 
             try:
-                await cursor.execute(query_text)
-                logging.debug(f"SQL OK: {query_text}")
+                cursor.execute(query_text)
+                conn.commit()
+                logging.debug(f"[Worker {worker_id}] SQL OK: {query_text}")
 
             except Exception as e:
                 err = str(e)
-                logging.error(f"SQL ERROR: {err} | {query_text}")
+                logging.error(f"[Worker {worker_id}] SQL ERROR: {err} | {query_text}")
 
                 # Deadlock → reintentar una vez
                 if "1205" in err or "40001" in err:
-                    logging.warning("Deadlock detectado. Reintentando comando...")
+                    logging.warning(f"[Worker {worker_id}] Deadlock detectado. Reintentando...")
                     await asyncio.sleep(0.1)
                     try:
-                        await cursor.execute(query_text)
-                        logging.warning("Deadlock resuelto en reintento.")
+                        cursor.execute(query_text)
+                        conn.commit()
+                        logging.warning(f"[Worker {worker_id}] Deadlock resuelto.")
                     except Exception as e2:
-                        logging.error(f"Error tras reintento de deadlock: {e2}")
-                    # NO task_done() aquí
+                        logging.error(f"[Worker {worker_id}] Error tras reintento: {e2}")
+                    queue.task_done()
                     continue
 
-                # Errores de conexión reales → reconectar
+                # Errores de conexión → reconectar
                 if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
-                    logging.warning("Conexión MSSQL perdida. Reconectando...")
+                    logging.warning(f"[Worker {worker_id}] Conexión MSSQL perdida. Reconectando...")
 
                     try:
-                        await cursor.close()
+                        cursor.close()
                     except:
                         pass
-
                     try:
-                        await conn.close()
+                        conn.close()
                     except:
                         pass
 
                     conn = None
                     cursor = None
-
                 else:
-                    logging.warning("Error SQL normal. No se reconecta.")
+                    logging.warning(f"[Worker {worker_id}] Error SQL normal.")
 
             finally:
-                # ÚNICO task_done() por cada queue.get()
                 queue.task_done()
 
         except Exception as fatal:
-            logging.error(f"Error fatal en worker: {fatal}")
+            logging.error(f"[Worker {worker_id}] Error fatal: {fatal}")
             conn = None
             cursor = None
             await asyncio.sleep(1)
@@ -158,12 +151,15 @@ def on_message(client, userdata, msg):
     try:
         query = msg.payload.decode("utf-8")
 
-        if query[-1] != ";":
+        if not query.endswith(";"):
             query += ";"
 
         logging.info(f"MQTT recibido → {query}")
 
-        loop.call_soon_threadsafe(queue.put_nowait, query)
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, query)
+        except asyncio.QueueFull:
+            logging.error("Cola llena, descartando mensaje MQTT")
 
     except Exception as e:
         logging.error(f"Error procesando mensaje MQTT: {e}")
@@ -187,48 +183,41 @@ def iniciar_mqtt():
 
     return client
 
-
 # ---------------------------------------------------------
 # MAIN ASYNC
 # ---------------------------------------------------------
 async def main():
-    logging.warning("Creando pool MSSQL optimizado...")
-
-    pool = await asyncodbc.create_pool(
-        dsn=MSSQL_CONN_STR,
-        minsize=6,
-        maxsize=6,
-        autocommit=True
-    )
-
-    logging.warning("Pool MSSQL creado correctamente.")
-
     logging.warning("===========================================================")
     logging.warning("   MQTT2MSSQL Add-on iniciado correctamente")
-    logging.warning("   Workers SQL activos, MQTT escuchando, pool MSSQL OK")
+    logging.warning("   Workers SQL activos, MQTT escuchando")
     logging.warning("   TLS activado en la comunicación con MSSQL")
     logging.warning("===========================================================")
 
-    for _ in range(6):
-        loop.create_task(worker_sql(pool))
+    # Lanzar workers SQL
+    for i in range(6):
+        loop.create_task(worker_sql(i))
 
     mqtt_client = iniciar_mqtt()
 
-    while True:
-        await asyncio.sleep(1)
+    # Mantener vivo el servicio
+    await asyncio.Event().wait()
 
-    return mqtt_client, pool
+    return mqtt_client
 
 # ---------------------------------------------------------
 # EJECUCIÓN
 # ---------------------------------------------------------
 if __name__ == "__main__":
     try:
-        mqtt_client, pool = loop.run_until_complete(main())
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        logging.warning("Recibido señal de parada desde Home Assistant.")
+        mqtt_client = loop.run_until_complete(main())
     except Exception as e:
         logging.error(f"Error inesperado en ejecución principal: {e}")
     finally:
-        logging.warning("Salida inmediata para evitar SIGKILL (exit code 137).")
-        os._exit(0)
+        logging.warning("Cerrando MQTT...")
+        try:
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+        except:
+            pass
+
+        logging.warning("Add-on detenido correctamente.")
