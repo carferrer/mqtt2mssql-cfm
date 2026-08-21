@@ -63,12 +63,16 @@ loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 
 # ---------------------------------------------------------
-# COLA FIFO GRANDE + BACKPRESSURE
+# COLA FIFO GRANDE
 # ---------------------------------------------------------
-queue = asyncio.Queue(maxsize=5000)
+queue = asyncio.Queue(maxsize=10000)
+
+# Tamaño de batch y tiempo máximo de espera
+BATCH_SIZE = 200        # nº máximo de mensajes por lote
+BATCH_TIMEOUT = 0.05    # segundos máximo que espera para completar lote
 
 # ---------------------------------------------------------
-# WORKER SQL (pyodbc, máximo rendimiento)
+# WORKER SQL CON BATCHING
 # ---------------------------------------------------------
 async def worker_sql(worker_id: int):
     conn = None
@@ -93,46 +97,70 @@ async def worker_sql(worker_id: int):
                     backoff = min(backoff * 2, 30)
                     continue
 
-            query_text = await queue.get()
+            # Construir un batch
+            batch = []
+            try:
+                # Primer mensaje (bloqueante)
+                query_text = await queue.get()
+                batch.append(query_text)
+
+                # Intentar completar el batch sin bloquear demasiado
+                start = loop.time()
+                while len(batch) < BATCH_SIZE and (loop.time() - start) < BATCH_TIMEOUT:
+                    try:
+                        q = queue.get_nowait()
+                        batch.append(q)
+                    except asyncio.QueueEmpty:
+                        await asyncio.sleep(0.001)
+                        break
+            except Exception as e:
+                logging.error(f"[Worker {worker_id}] Error obteniendo batch: {e}")
+                continue
+
+            # Aquí tienes un batch de N consultas (strings)
+            # Estrategia simple: concatenar todas las sentencias en un solo comando
+            # IMPORTANTE: esto asume que cada query_text es una sentencia completa terminada en ';'
+            sql_batch = "\n".join(batch)
 
             try:
-                cursor.execute(query_text)
+                cursor.execute(sql_batch)
                 conn.commit()
-                logging.debug(f"[Worker {worker_id}] SQL OK: {query_text}")
-
+                logging.debug(f"[Worker {worker_id}] Batch OK ({len(batch)} consultas)")
             except Exception as e:
                 err = str(e)
-                logging.error(f"[Worker {worker_id}] SQL ERROR: {err} | {query_text}")
+                logging.error(f"[Worker {worker_id}] SQL ERROR en batch: {err}")
 
+                # Deadlock → reintentar una vez el batch completo
                 if "1205" in err or "40001" in err:
-                    logging.warning(f"[Worker {worker_id}] Deadlock detectado. Reintentando...")
+                    logging.warning(f"[Worker {worker_id}] Deadlock en batch. Reintentando...")
                     await asyncio.sleep(0.1)
                     try:
-                        cursor.execute(query_text)
+                        cursor.execute(sql_batch)
                         conn.commit()
-                        logging.warning(f"[Worker {worker_id}] Deadlock resuelto.")
+                        logging.warning(f"[Worker {worker_id}] Deadlock resuelto en batch.")
                     except Exception as e2:
-                        logging.error(f"[Worker {worker_id}] Error tras reintento: {e2}")
-                    queue.task_done()
-                    continue
-
-                if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
-                    logging.warning(f"[Worker {worker_id}] Conexión MSSQL perdida. Reconectando...")
-                    try:
-                        cursor.close()
-                    except:
-                        pass
-                    try:
-                        conn.close()
-                    except:
-                        pass
-                    conn = None
-                    cursor = None
+                        logging.error(f"[Worker {worker_id}] Error tras reintento de batch: {e2}")
                 else:
-                    logging.warning(f"[Worker {worker_id}] Error SQL normal.")
+                    # Errores de conexión → reconectar
+                    if any(code in err for code in ["08S01", "HYT00", "08001", "01000"]):
+                        logging.warning(f"[Worker {worker_id}] Conexión MSSQL perdida. Reconectando...")
+                        try:
+                            cursor.close()
+                        except:
+                            pass
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                        conn = None
+                        cursor = None
+                    else:
+                        logging.warning(f"[Worker {worker_id}] Error SQL normal en batch.")
 
             finally:
-                queue.task_done()
+                # Marcar todos los mensajes del batch como procesados
+                for _ in batch:
+                    queue.task_done()
 
         except Exception as fatal:
             logging.error(f"[Worker {worker_id}] Error fatal: {fatal}")
@@ -141,7 +169,7 @@ async def worker_sql(worker_id: int):
             await asyncio.sleep(1)
 
 # ---------------------------------------------------------
-# PROCESAR MENSAJE MQTT (FIFO + backpressure)
+# PROCESAR MENSAJE MQTT
 # ---------------------------------------------------------
 def on_message(client, userdata, msg):
     try:
@@ -188,11 +216,12 @@ def iniciar_mqtt():
 # ---------------------------------------------------------
 async def main():
     logging.warning("===========================================================")
-    logging.warning("   MQTT2MSSQL Add-on iniciado (máximo rendimiento)")
-    logging.warning("   20 workers SQL, cola 5000, backpressure activo")
+    logging.warning("   MQTT2MSSQL Add-on iniciado (batching extremo)")
+    logging.warning(f"   BATCH_SIZE={BATCH_SIZE}, BATCH_TIMEOUT={BATCH_TIMEOUT}s")
     logging.warning("===========================================================")
 
-    for i in range(20):
+    # Ajusta el nº de workers según la potencia de tu MSSQL
+    for i in range(10):
         loop.create_task(worker_sql(i))
 
     mqtt_client = iniciar_mqtt()
