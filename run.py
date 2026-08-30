@@ -165,9 +165,9 @@ def on_message(client, userdata, msg):
         logging.error(f"Error procesando mensaje MQTT: {e}")
 
 # ---------------------------------------------------------
-# MQTT CALLBACKS: CONEXIÓN / DESCONEXIÓN
+# MQTT CALLBACKS: CONEXIÓN / DESCONEXIÓN (Corregidos para API v2)
 # ---------------------------------------------------------
-def on_connect(client, userdata, flags, rc, properties):
+def on_connect(client, userdata, flags, rc, properties=None):
     logging.warning(f"MQTT conectado (rc={rc}). Suscribiendo al topic...")
     try:
         client.subscribe(MQTT_TOPIC, qos=0)
@@ -176,19 +176,9 @@ def on_connect(client, userdata, flags, rc, properties):
         logging.error(f"Error suscribiendo al topic MQTT: {e}")
 
 
-def on_disconnect(client, userdata, rc, properties):
-    logging.warning(f"MQTT desconectado (rc={rc}). Intentando reconectar...")
-
-    delay = 1
-    while True:
-        try:
-            client.reconnect()
-            logging.warning("MQTT reconectado correctamente.")
-            return
-        except Exception as e:
-            logging.error(f"Error reconectando MQTT: {e}")
-            time.sleep(delay)
-            delay = min(delay * 2, 30)
+def on_disconnect(client, userdata, flags, rc, properties=None):
+    # SOLUCIÓN: Añadimos 'flags' y ponemos 'properties=None' como opcional para evitar fallos de argumentos
+    logging.warning(f"MQTT desconectado de forma inesperada (rc={rc}). El motor automático gestionará la reconexión...")
 
 # ---------------------------------------------------------
 # MQTT CLIENT
