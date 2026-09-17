@@ -1,0 +1,111 @@
+name: Publicar release
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión ya fusionada en main (por ejemplo: 2026.09.02)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  publish-release:
+    name: Publicar release
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/'))
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Obtener versión y commit
+        id: vars
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            TARGET="main"
+          else
+            VERSION="${{ github.event.pull_request.head.ref }}"
+            VERSION="${VERSION#release/}"
+            TARGET="${{ github.event.pull_request.merge_commit_sha }}"
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "Versión no válida: $VERSION"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+      - name: Desplegar main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Extraer notas del CHANGELOG
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          text = Path("CHANGELOG.md").read_text()
+
+          pattern = re.compile(
+              rf"(?ms)^# Versión {re.escape(version)}(?: \([^\n]+\))?\n\n?(.*?)(?=^# Versión |\Z)"
+          )
+          match = pattern.search(text)
+          if not match:
+              raise SystemExit(f"No se encontró la sección de la versión {version} en CHANGELOG.md")
+
+          notes = match.group(1).strip()
+          if not notes:
+              raise SystemExit(f"La sección de la versión {version} está vacía")
+
+          Path("release-notes.md").write_text(notes + "\n")
+          PY
+
+      - name: Comprobar que la release no existe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        shell: bash
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "La release $VERSION ya existe"
+            exit 1
+          fi
+
+      - name: Crear y publicar release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          TARGET: ${{ steps.vars.outputs.target }}
+        shell: bash
+        run: |
+          gh release create "$VERSION" \
+            --target "$TARGET" \
+            --title "$VERSION" \
+            --notes-file release-notes.md
+
+      - name: Lanzar build de imágenes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        shell: bash
+        run: |
+          gh workflow run builder.yaml \
+            --ref main \
+            -f version="$VERSION"
