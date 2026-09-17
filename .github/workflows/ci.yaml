@@ -12,7 +12,7 @@ on:
       - Dockerfile
       - config.yaml
       - run.py
-      - .github/workflows/ci.yaml
+      - .github/workflows/**
   workflow_dispatch:
 
 permissions:
