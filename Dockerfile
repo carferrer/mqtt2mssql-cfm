@@ -20,15 +20,14 @@ RUN \
         unixodbc \
     && apt-get install -y --no-install-recommends \
         g++ \
-        gnupg \
         python3-dev \
         python3-pip \
         python3-venv \
         unixodbc-dev \
-    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-        | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/13/prod trixie main" \
-        > /etc/apt/sources.list.d/mssql-release.list \
+    && curl -fsSL -o /tmp/packages-microsoft-prod.deb \
+        https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb \
+    && dpkg -i /tmp/packages-microsoft-prod.deb \
+    && rm /tmp/packages-microsoft-prod.deb \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends \
         msodbcsql18 \
@@ -39,7 +38,6 @@ RUN \
         asyncodbc==0.1.1 \
     && apt-get purge -y --auto-remove \
         g++ \
-        gnupg \
         python3-dev \
         python3-pip \
         python3-venv \
