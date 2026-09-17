@@ -1,3 +1,16 @@
+# Versión 2026.09.01 (2026-09-17)
+
+## What's Changed
+* Add CI and remove obsolete release workflows by @carferrer in https://github.com/carferrer/mqtt2mssql-cfm/pull/1
+* Remove obsolete automatic release workflows by @carferrer in https://github.com/carferrer/mqtt2mssql-cfm/pull/2
+* Add release preparation and publication workflows by @carferrer in https://github.com/carferrer/mqtt2mssql-cfm/pull/3
+* Use Home Assistant Debian base image by @carferrer in https://github.com/carferrer/mqtt2mssql-cfm/pull/5
+
+## New Contributors
+* @carferrer made their first contribution in https://github.com/carferrer/mqtt2mssql-cfm/pull/1
+
+**Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/2028.08.77...2026.09.01
+
 # Versión 2028.08.77 (2026-08-30)
 
 **Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/2028.08.76...2028.08.77
