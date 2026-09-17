@@ -10,9 +10,10 @@ on:
       - synchronize
     paths:
       - Dockerfile
-      - config.yaml
+      - build.yaml
       - run.py
       - .github/workflows/**
+      - rootfs/**
   workflow_dispatch:
 
 permissions:
