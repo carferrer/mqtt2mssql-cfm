@@ -1,0 +1,127 @@
+name: Preparar release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Nueva versión (por ejemplo: 2026.09.15)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare-release:
+    name: Preparar release ${{ inputs.version }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Desplegar código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Validar versión
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "Versión no válida: $VERSION"
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --heads origin "release/$VERSION" >/dev/null 2>&1; then
+            echo "Ya existe la rama release/$VERSION"
+            exit 1
+          fi
+
+      - name: Generar notas automáticamente
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$VERSION" \
+            -f target_commitish="main" \
+            --jq '.body' > release_notes.md
+
+          if [ ! -s release_notes.md ]; then
+            echo "GitHub no ha generado notas para esta versión"
+            exit 1
+          fi
+
+          echo "Notas generadas:"
+          cat release_notes.md
+
+      - name: Actualizar config.yaml y CHANGELOG.md
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          FECHA=$(date +%Y-%m-%d)
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          version = "${{ inputs.version }}"
+          path = Path("config.yaml")
+          content = path.read_text()
+          updated, count = re.subn(
+              r'(?m)^version:\s*[^\n]+$',
+              f'version: {version}',
+              content,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("No se ha encontrado exactamente una línea 'version:' en config.yaml")
+          path.write_text(updated)
+          PY
+
+          touch CHANGELOG.md
+          cp CHANGELOG.md old_changelog.txt
+
+          {
+            echo "# Versión $VERSION ($FECHA)"
+            echo
+            cat release_notes.md
+            echo
+            cat old_changelog.txt
+          } > CHANGELOG.md
+
+          rm old_changelog.txt release_notes.md
+
+      - name: Crear rama y commit
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          BRANCH="release/$VERSION"
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add config.yaml CHANGELOG.md
+          git commit -m "chore: preparar release $VERSION"
+          git push origin "$BRANCH"
+
+      - name: Crear pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          BRANCH="release/$VERSION"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: preparar release $VERSION" \
+            --body $'Prepara la release **'"$VERSION"$'**.\n\n- Actualiza `config.yaml`.\n- Genera automáticamente las notas de la versión con GitHub y las añade al inicio de `CHANGELOG.md`.\n\nRevisa las notas antes de hacer merge. Después del merge ya se puede publicar la release.'
