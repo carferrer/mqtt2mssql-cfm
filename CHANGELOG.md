@@ -1,3 +1,15 @@
+# Versión 2026.09.02 (2026-09-17)
+
+## What's Changed
+* Configure Renovate dependency updates by @carferrer in https://github.com/carferrer/mqtt2mssql-cfm/pull/7
+* ⬆️ Update pyodbc to v5.3.0 by @renovate[bot] in https://github.com/carferrer/mqtt2mssql-cfm/pull/8
+* Mejorar estabilidad y cierre limpio de run.py by @carferrer in https://github.com/carferrer/mqtt2mssql-cfm/pull/10
+
+## New Contributors
+* @renovate[bot] made their first contribution in https://github.com/carferrer/mqtt2mssql-cfm/pull/8
+
+**Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/2026.09.01...2026.09.02
+
 # Versión 2026.09.01 (2026-09-17)
 
 ## What's Changed
