@@ -8,11 +8,6 @@ on:
       - opened
       - reopened
       - synchronize
-    paths:
-      - Dockerfile
-      - config.yaml
-      - run.py
-      - .github/workflows/**
   workflow_dispatch:
 
 permissions:
