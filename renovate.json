@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "rebaseWhen": "behind-base-branch",
+  "timezone": "Europe/Madrid",
+  "dependencyDashboard": true,
+  "labels": [
+    "dependencies"
+  ],
+  "commitMessagePrefix": "⬆️",
+  "commitMessageTopic": "{{depName}}",
+
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Docker base image",
+      "managerFilePatterns": [
+        "/^Dockerfile$/",
+        "/^build\\.yaml$/"
+      ],
+      "matchStringsStrategy": "any",
+      "matchStrings": [
+        "ARG BUILD_FROM=(?<depName>.*?):(?<currentValue>.*?)\\s+",
+        "(aarch64|amd64):\\s[\"']?(?<depName>.*?):(?<currentValue>.*?)[\"']?\\s"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Python packages installed in Dockerfile",
+      "managerFilePatterns": [
+        "/^Dockerfile$/"
+      ],
+      "matchStrings": [
+        "\\s+(?<depName>paho-mqtt|pyodbc|asyncodbc)==(?<currentValue>[0-9][0-9A-Za-z._+-]*)\\s"
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    }
+  ],
+
+  "packageRules": [
+    {
+      "matchDatasources": [
+        "pypi"
+      ],
+      "addLabels": [
+        "python"
+      ]
+    }
+  ]
+}
