@@ -1,3 +1,12 @@
+# Versión 2026.10.01 (2026-10-28)
+
+## What's Changed
+* Update ci.yaml by @carferrer in https://github.com/carferrer/mqtt2mssql-cfm/pull/12
+* ⬆️ Update ghcr.io/hassio-addons/debian-base Docker tag to v9.5.1 by @renovate[bot] in https://github.com/carferrer/mqtt2mssql-cfm/pull/13
+
+
+**Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/2026.09.02...2026.10.01
+
 # Versión 2026.09.02 (2026-09-17)
 
 ## What's Changed
