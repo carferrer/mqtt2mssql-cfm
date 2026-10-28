@@ -11,6 +11,8 @@ on:
     paths:
       - Dockerfile
       - build.yaml
+      - config.yaml
+      - CHANGELOG.md
       - run.py
       - .github/workflows/**
       - rootfs/**
