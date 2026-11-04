@@ -33,7 +33,7 @@ RUN \
         msodbcsql18 \
     && python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade \
-        paho-mqtt==2.1.0 \
+        paho-mqtt==2.2.0 \
         pyodbc==5.3.0 \
         asyncodbc==0.1.1 \
     && apt-get purge -y --auto-remove \
