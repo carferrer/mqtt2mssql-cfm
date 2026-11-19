@@ -1,3 +1,13 @@
+# Versión 2026.11.01 (2026-11-19)
+
+## What's Changed
+* ⬆️ Update ghcr.io/hassio-addons/debian-base Docker tag to v9.5.2 by @renovate[bot] in https://github.com/carferrer/mqtt2mssql-cfm/pull/17
+* ⬆️ Update paho-mqtt to v2.2.0 by @renovate[bot] in https://github.com/carferrer/mqtt2mssql-cfm/pull/16
+* ⬆️ Update pyodbc to v5.5.0 by @renovate[bot] in https://github.com/carferrer/mqtt2mssql-cfm/pull/18
+
+
+**Full Changelog**: https://github.com/carferrer/mqtt2mssql-cfm/compare/2026.10.01...2026.11.01
+
 # Versión 2026.10.01 (2026-10-28)
 
 ## What's Changed
